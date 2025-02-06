@@ -11,6 +11,10 @@ class UserBase(BaseModel):
 class UserCreate(UserBase):
     password: str
 
+class UserLogin(BaseModel):
+    username: str  # Can be either username or email
+    password: str
+
 class UserResponse(UserBase):
     id: UUID4
     api_key: Optional[str] = None
