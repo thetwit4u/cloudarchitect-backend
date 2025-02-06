@@ -21,6 +21,30 @@ class AWSService:
             region_name=credentials.region
         )
 
+    def validate_credentials(self) -> bool:
+        """
+        Validate AWS credentials by attempting to list S3 buckets
+        Returns True if credentials are valid, raises an exception otherwise
+        """
+        if not self.session:
+            raise ValueError("AWS session not initialized")
+        
+        try:
+            # Try to list S3 buckets as a simple validation
+            s3 = self.session.client('s3')
+            s3.list_buckets()
+            return True
+        except ClientError as e:
+            error_code = e.response.get('Error', {}).get('Code', '')
+            if error_code in ['InvalidAccessKeyId', 'SignatureDoesNotMatch']:
+                raise ValueError("Invalid AWS credentials")
+            elif error_code == 'InvalidToken':
+                raise ValueError("AWS credentials have expired")
+            else:
+                raise ValueError(f"AWS error: {str(e)}")
+        except Exception as e:
+            raise ValueError(f"Error validating AWS credentials: {str(e)}")
+
     @staticmethod
     def store_credentials(credentials: AWSCredentials, user_id: str) -> StoredAWSCredentials:
         cred_id = str(uuid.uuid4())

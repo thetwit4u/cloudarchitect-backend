@@ -1,6 +1,7 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from datetime import datetime
 from typing import Optional
+from uuid import UUID
 
 class ProjectBase(BaseModel):
     name: str
@@ -10,10 +11,10 @@ class ProjectCreate(ProjectBase):
     pass
 
 class Project(ProjectBase):
-    id: str
-    created_at: datetime
-    updated_at: datetime
-    user_id: str
+    id: UUID
+    user_id: UUID
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
     
     class Config:
         from_attributes = True

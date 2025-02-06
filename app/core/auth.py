@@ -1,43 +1,45 @@
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Optional
-from jose import JWTError, jwt
-from fastapi import Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer
-from ..schemas.auth import TokenData, User
-from .config import get_settings
+from fastapi import Depends, HTTPException, Security, status
+from fastapi.security import APIKeyHeader
+from sqlalchemy.orm import Session
+from ..core.database import get_db
+from .. import models
+import logging
 
-settings = get_settings()
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.API_V1_STR}/auth/token")
+logger = logging.getLogger(__name__)
 
-# For demo purposes, using an in-memory user store
-users_db = {}
+API_KEY_NAME = "X-API-Key"
+api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=True)
 
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
-    to_encode = data.copy()
-    if expires_delta:
-        expire = datetime.utcnow() + expires_delta
-    else:
-        expire = datetime.utcnow() + timedelta(minutes=15)
-    to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
-    return encoded_jwt
-
-async def get_current_user(token: str = Depends(oauth2_scheme)) -> User:
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
-    try:
-        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
-        username: str = payload.get("sub")
-        if username is None:
-            raise credentials_exception
-        token_data = TokenData(username=username)
-    except JWTError:
-        raise credentials_exception
+async def get_api_key(
+    api_key_header: str = Security(api_key_header),
+    db: Session = Depends(get_db)
+) -> models.User:
+    logger.info(f"Received API key header: {api_key_header[:8]}...")
     
-    user = users_db.get(token_data.username)
-    if user is None:
-        raise credentials_exception
+    if not api_key_header:
+        logger.warning("API key is missing")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="API key is missing"
+        )
+    
+    # Get user by API key
+    user = db.query(models.User).filter(
+        models.User.api_key == api_key_header,
+        models.User.is_active == True
+    ).first()
+    
+    if not user:
+        logger.warning(f"Invalid API key: {api_key_header[:8]}...")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API key"
+        )
+    
+    logger.info(f"Authenticated user: {user.username}")
     return user
+
+# Alias for backwards compatibility
+get_current_user = get_api_key

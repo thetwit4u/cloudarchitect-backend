@@ -1,22 +1,85 @@
-from datetime import timedelta
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordRequestForm
-from ..core.auth import create_access_token, get_current_user
-from ..core.config import get_settings
-from ..schemas.auth import Token, User
+from sqlalchemy.orm import Session
+from ..core.database import get_db
+from ..core.auth import get_current_user
+from ..schemas.auth import UserCreate, User
+from .. import models
+import secrets
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
-settings = get_settings()
 
-@router.post("/auth/token", response_model=Token)
-async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends()):
-    # For demo purposes, accept any credentials
-    access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": form_data.username}, expires_delta=access_token_expires
-    )
-    return {"access_token": access_token, "token_type": "bearer"}
+def generate_api_key():
+    return secrets.token_urlsafe(32)
 
-@router.get("/auth/me", response_model=User)
-async def read_users_me(current_user: User = Depends(get_current_user)):
+@router.post("/register", response_model=User)
+async def register_user(
+    user: UserCreate,
+    db: Session = Depends(get_db)
+):
+    """
+    Register a new user and get an API key
+    """
+    logger.info(f"Attempting to register user with email: {user.email}")
+    
+    # Check if user already exists
+    existing_email = db.query(models.User).filter(
+        models.User.email == user.email
+    ).first()
+    
+    if existing_email:
+        logger.warning(f"Registration failed: Email already exists: {user.email}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email already registered"
+        )
+    
+    existing_username = db.query(models.User).filter(
+        models.User.username == user.username
+    ).first()
+    
+    if existing_username:
+        logger.warning(f"Registration failed: Username already taken: {user.username}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Username already taken"
+        )
+    
+    try:
+        # Create new user with API key
+        api_key = generate_api_key()
+        logger.info(f"Generated API key for user {user.email}: {api_key[:8]}...")
+        
+        db_user = models.User(
+            username=user.username,
+            email=user.email,
+            full_name=user.full_name,
+            api_key=api_key,
+            is_active=True  # Ensure user is active by default
+        )
+        
+        db.add(db_user)
+        db.commit()
+        db.refresh(db_user)
+        
+        logger.info(f"Successfully registered user: {user.email}")
+        return db_user
+        
+    except Exception as e:
+        logger.error(f"Error during user registration: {str(e)}")
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An error occurred during registration"
+        )
+
+@router.get("/me", response_model=User)
+async def get_current_user_info(
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Get current user information
+    """
     return current_user
