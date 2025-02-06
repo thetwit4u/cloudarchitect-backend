@@ -31,7 +31,7 @@ app.add_middleware(
 app.include_router(auth.router, prefix=f"{api_prefix}/auth", tags=["auth"])
 app.include_router(aws.router, prefix=f"{api_prefix}/aws", tags=["aws"])
 app.include_router(projects.router, prefix=f"{api_prefix}/projects", tags=["projects"])
-app.include_router(resources.router, prefix=f"{api_prefix}/resources", tags=["resources"])
+app.include_router(resources.router, prefix=f"{api_prefix}/projects", tags=["resources"])
 app.include_router(aws_connections.router, prefix=f"{api_prefix}", tags=["aws-connections"])  
 
 @app.get("/")

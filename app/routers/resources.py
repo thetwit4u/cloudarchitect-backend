@@ -19,10 +19,7 @@ async def get_resources(
     """
     credentials = AWSService.get_credentials(project_id, current_user.id)
     if not credentials:
-        raise HTTPException(
-            status_code=404,
-            detail="AWS credentials not found for this project"
-        )
+        return []
 
     aws_service = AWSService(credentials)
     resources = await aws_service.discover_resources()
@@ -45,10 +42,7 @@ async def get_resource_types(
     """
     credentials = AWSService.get_credentials(project_id, current_user.id)
     if not credentials:
-        raise HTTPException(
-            status_code=404,
-            detail="AWS credentials not found for this project"
-        )
+        return {"resource_types": []}
 
     aws_service = AWSService(credentials)
     resources = await aws_service.discover_resources()
@@ -67,10 +61,11 @@ async def get_resource_summary(
     """
     credentials = AWSService.get_credentials(project_id, current_user.id)
     if not credentials:
-        raise HTTPException(
-            status_code=404,
-            detail="AWS credentials not found for this project"
-        )
+        return {
+            "total_resources": 0,
+            "by_type": {},
+            "by_status": {}
+        }
 
     aws_service = AWSService(credentials)
     resources = await aws_service.discover_resources()
