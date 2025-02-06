@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from typing import List, Optional
 from ..schemas.aws import ResourceSummary
 from ..services.aws_service import AWSService
@@ -91,4 +91,53 @@ async def get_resource_summary(
         "total_resources": len(resources),
         "by_type": type_summary,
         "by_status": status_summary
+    }
+
+@router.post("/{project_id}/resources/discover", status_code=status.HTTP_202_ACCEPTED)
+async def start_resource_discovery(
+    project_id: str,
+    current_user: UserResponse = Depends(get_current_user)
+):
+    """
+    Start the resource discovery process for a project
+    """
+    credentials = AWSService.get_credentials(project_id, current_user.id)
+    if not credentials:
+        return {
+            "status": "error",
+            "message": "AWS credentials not found for this project"
+        }
+
+    aws_service = AWSService(credentials)
+    try:
+        await aws_service.discover_resources()
+        return {
+            "status": "started",
+            "message": "Resource discovery started successfully"
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": str(e)
+        }
+
+@router.get("/{project_id}/resources/discover/status")
+async def get_discovery_status(
+    project_id: str,
+    current_user: UserResponse = Depends(get_current_user)
+):
+    """
+    Get the status of the resource discovery process
+    """
+    credentials = AWSService.get_credentials(project_id, current_user.id)
+    if not credentials:
+        return {
+            "status": "error",
+            "message": "AWS credentials not found for this project"
+        }
+
+    # For now, we'll return a simple status since discovery is synchronous
+    return {
+        "status": "completed",
+        "message": "Resource discovery completed"
     }
