@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 from typing import List
 from ..schemas.project import Project, ProjectCreate
 from ..core.auth import get_current_user
-from ..schemas.auth import User
+from ..schemas.auth import UserResponse
 from ..core.database import get_db
 from .. import models
 from datetime import datetime
@@ -14,7 +14,7 @@ router = APIRouter()
 @router.post("", response_model=Project)
 async def create_project(
     project: ProjectCreate,
-    current_user: User = Depends(get_current_user),
+    current_user: UserResponse = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
@@ -37,7 +37,7 @@ async def create_project(
 
 @router.get("", response_model=List[Project])
 async def list_projects(
-    current_user: User = Depends(get_current_user),
+    current_user: UserResponse = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
@@ -50,7 +50,7 @@ async def list_projects(
 @router.get("/{project_id}", response_model=Project)
 async def get_project(
     project_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: UserResponse = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
@@ -69,7 +69,7 @@ async def get_project(
 @router.delete("/{project_id}")
 async def delete_project(
     project_id: str,
-    current_user: User = Depends(get_current_user),
+    current_user: UserResponse = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """

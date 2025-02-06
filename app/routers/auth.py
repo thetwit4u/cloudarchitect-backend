@@ -2,19 +2,24 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from ..core.database import get_db
 from ..core.auth import get_current_user
-from ..schemas.auth import UserCreate, User
+from ..schemas.auth import UserCreate, UserResponse
 from .. import models
 import secrets
 import logging
+from passlib.context import CryptContext
 
 logger = logging.getLogger(__name__)
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 router = APIRouter()
 
 def generate_api_key():
     return secrets.token_urlsafe(32)
 
-@router.post("/register", response_model=User)
+def get_password_hash(password: str) -> str:
+    return pwd_context.hash(password)
+
+@router.post("/register", response_model=UserResponse)
 async def register_user(
     user: UserCreate,
     db: Session = Depends(get_db)
@@ -56,6 +61,7 @@ async def register_user(
             username=user.username,
             email=user.email,
             full_name=user.full_name,
+            hashed_password=get_password_hash(user.password),
             api_key=api_key,
             is_active=True  # Ensure user is active by default
         )
@@ -75,7 +81,7 @@ async def register_user(
             detail="An error occurred during registration"
         )
 
-@router.get("/me", response_model=User)
+@router.get("/me", response_model=UserResponse)
 async def get_current_user_info(
     current_user: models.User = Depends(get_current_user)
 ):

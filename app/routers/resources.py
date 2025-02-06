@@ -3,7 +3,7 @@ from typing import List, Optional
 from ..schemas.aws import ResourceSummary
 from ..services.aws_service import AWSService
 from ..core.auth import get_current_user
-from ..schemas.auth import User
+from ..schemas.auth import UserResponse
 
 router = APIRouter()
 
@@ -12,7 +12,7 @@ async def get_resources(
     project_id: str,
     resource_type: Optional[str] = None,
     region: Optional[str] = None,
-    current_user: User = Depends(get_current_user)
+    current_user: UserResponse = Depends(get_current_user)
 ):
     """
     Get all resources for a project with optional filtering
@@ -38,7 +38,7 @@ async def get_resources(
 @router.get("/{project_id}/resources/types")
 async def get_resource_types(
     project_id: str,
-    current_user: User = Depends(get_current_user)
+    current_user: UserResponse = Depends(get_current_user)
 ):
     """
     Get available resource types for a project
@@ -60,7 +60,7 @@ async def get_resource_types(
 @router.get("/{project_id}/resources/summary")
 async def get_resource_summary(
     project_id: str,
-    current_user: User = Depends(get_current_user)
+    current_user: UserResponse = Depends(get_current_user)
 ):
     """
     Get resource count summary by type and status

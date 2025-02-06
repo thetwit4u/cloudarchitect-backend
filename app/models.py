@@ -36,6 +36,7 @@ class Project(Base):
     # Relationships
     user = relationship("User", back_populates="projects")
     resources = relationship("Resource", back_populates="project", cascade="all, delete-orphan")
+    aws_credentials = relationship("AWSCredentials", back_populates="project", cascade="all, delete-orphan", uselist=False)
 
 class Resource(Base):
     __tablename__ = "resources"
@@ -50,3 +51,17 @@ class Resource(Base):
 
     # Relationships
     project = relationship("Project", back_populates="resources")
+
+class AWSCredentials(Base):
+    __tablename__ = "aws_credentials"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=generate_uuid)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id"))
+    aws_access_key_id = Column(String)
+    aws_secret_access_key = Column(String)
+    region = Column(String)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    # Relationships
+    project = relationship("Project", back_populates="aws_credentials")

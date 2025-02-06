@@ -1,67 +1,143 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List
 from ..core.database import get_db
-from ..models.aws_connection import AWSConnection
-from ..schemas.aws_connection import AWSConnectionCreate, AWSConnection as AWSConnectionSchema
 from ..core.auth import get_current_user
+from ..schemas.auth import UserResponse
+from ..models import Project, AWSCredentials
+from ..schemas.aws import AWSCredentialsCreate, AWSCredentialsResponse
 from uuid import UUID
 
-router = APIRouter(prefix="/api/v1/projects/{project_id}/aws-connections", tags=["aws-connections"])
+router = APIRouter(prefix="/projects/{project_id}/aws-credentials", tags=["aws-credentials"])
 
-@router.post("", response_model=AWSConnectionSchema)
-async def create_aws_connection(
+async def verify_project_access(
     project_id: UUID,
-    connection: AWSConnectionCreate,
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user)
+    current_user: UserResponse = Depends(get_current_user)
+) -> Project:
+    project = db.query(Project).filter(
+        Project.id == project_id,
+        Project.user_id == current_user.id
+    ).first()
+    
+    if not project:
+        raise HTTPException(
+            status_code=403,
+            detail="You don't have access to this project"
+        )
+    
+    return project
+
+@router.post("", response_model=AWSCredentialsResponse)
+async def create_aws_credentials(
+    project_id: UUID,
+    credentials: AWSCredentialsCreate,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_user),
+    project: Project = Depends(verify_project_access)
 ):
-    db_connection = AWSConnection(
-        **connection.model_dump(),
-        project_id=project_id
+    existing_credentials = db.query(AWSCredentials).filter(
+        AWSCredentials.project_id == project_id
+    ).first()
+    
+    if existing_credentials:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="AWS credentials already exist for this project"
+        )
+    
+    db_credentials = AWSCredentials(
+        project_id=project_id,
+        aws_access_key_id=credentials.aws_access_key_id,
+        aws_secret_access_key=credentials.aws_secret_access_key,
+        region=credentials.region
     )
-    db.add(db_connection)
+    
+    db.add(db_credentials)
     db.commit()
-    db.refresh(db_connection)
-    return db_connection
+    db.refresh(db_credentials)
+    
+    return db_credentials
 
-@router.get("", response_model=List[AWSConnectionSchema])
-async def list_aws_connections(
+@router.get("", response_model=AWSCredentialsResponse)
+async def get_aws_credentials(
     project_id: UUID,
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user)
+    current_user: UserResponse = Depends(get_current_user),
+    project: Project = Depends(verify_project_access)
 ):
-    connections = db.query(AWSConnection).filter(AWSConnection.project_id == project_id).all()
-    return connections
-
-@router.get("/{connection_id}", response_model=AWSConnectionSchema)
-async def get_aws_connection(
-    project_id: UUID,
-    connection_id: UUID,
-    db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user)
-):
-    connection = db.query(AWSConnection).filter(
-        AWSConnection.id == connection_id,
-        AWSConnection.project_id == project_id
+    credentials = db.query(AWSCredentials).filter(
+        AWSCredentials.project_id == project_id
     ).first()
-    if not connection:
-        raise HTTPException(status_code=404, detail="AWS connection not found")
-    return connection
+    
+    if not credentials:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="AWS credentials not found"
+        )
+    
+    return credentials
 
-@router.delete("/{connection_id}")
-async def delete_aws_connection(
+@router.get("/{credentials_id}", response_model=AWSCredentialsResponse)
+async def get_aws_credentials_by_id(
     project_id: UUID,
-    connection_id: UUID,
+    credentials_id: UUID,
     db: Session = Depends(get_db),
-    current_user: dict = Depends(get_current_user)
+    current_user: UserResponse = Depends(get_current_user),
+    project: Project = Depends(verify_project_access)
 ):
-    connection = db.query(AWSConnection).filter(
-        AWSConnection.id == connection_id,
-        AWSConnection.project_id == project_id
+    credentials = db.query(AWSCredentials).filter(
+        AWSCredentials.id == credentials_id,
+        AWSCredentials.project_id == project_id
     ).first()
-    if not connection:
-        raise HTTPException(status_code=404, detail="AWS connection not found")
-    db.delete(connection)
+    
+    if not credentials:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="AWS credentials not found"
+        )
+    
+    return credentials
+
+@router.delete("/{credentials_id}")
+async def delete_aws_credentials_by_id(
+    project_id: UUID,
+    credentials_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_user),
+    project: Project = Depends(verify_project_access)
+):
+    credentials = db.query(AWSCredentials).filter(
+        AWSCredentials.id == credentials_id,
+        AWSCredentials.project_id == project_id
+    ).first()
+    
+    if not credentials:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="AWS credentials not found"
+        )
+    
+    db.delete(credentials)
     db.commit()
     return {"status": "success"}
+
+@router.delete("")
+async def delete_aws_credentials(
+    project_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: UserResponse = Depends(get_current_user),
+    project: Project = Depends(verify_project_access)
+):
+    result = db.query(AWSCredentials).filter(
+        AWSCredentials.project_id == project_id
+    ).delete()
+    
+    if not result:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="AWS credentials not found"
+        )
+    
+    db.commit()
+    return None

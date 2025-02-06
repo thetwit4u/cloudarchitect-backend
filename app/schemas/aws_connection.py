@@ -1,20 +1,19 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from datetime import datetime
-from typing import Optional
+from uuid import UUID
 
 class AWSConnectionBase(BaseModel):
-    name: str
-    aws_account_id: str
-    aws_region: str
-    aws_role_arn: str
-    aws_external_id: Optional[str] = None
+    aws_access_key_id: str
+    aws_secret_access_key: str
+    region: str
 
 class AWSConnectionCreate(AWSConnectionBase):
     pass
 
 class AWSConnection(AWSConnectionBase):
-    id: str
-    project_id: str
+    id: UUID
+    project_id: UUID
+    user_id: UUID
     created_at: datetime
     updated_at: datetime
 

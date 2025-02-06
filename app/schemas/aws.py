@@ -1,36 +1,50 @@
-from pydantic import BaseModel
-from typing import Optional, Dict, Any
+from pydantic import BaseModel, UUID4
 from datetime import datetime
+from typing import Optional, Dict, Any
 
-class AWSCredentials(BaseModel):
-    project_id: str
+class AWSCredentialsBase(BaseModel):
     aws_access_key_id: str
     aws_secret_access_key: str
-    region: str = "us-east-1"
+    region: str
 
-class StoredAWSCredentials(AWSCredentials):
-    id: str
+class AWSCredentialsCreate(AWSCredentialsBase):
+    pass
+
+class AWSCredentialsResponse(AWSCredentialsBase):
+    id: UUID4
+    project_id: UUID4
     created_at: datetime
-    updated_at: datetime
-    user_id: str
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+class StoredAWSCredentials(AWSCredentialsBase):
+    id: str
+    project_id: str
+    created_at: datetime
+    updated_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
 
 class ResourceSummary(BaseModel):
-    id: str
     type: str
-    name: Optional[str] = None
-    status: Optional[str] = None
-    project_id: str
+    name: str
+    arn: str
     region: str
-    resource_metadata: Optional[Dict[str, Any]] = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
 
 class ResourceDetails(ResourceSummary):
-    created_at: Optional[datetime] = None
+    id: str
+    status: Optional[str] = None
+    project_id: str
+    resource_metadata: Optional[Dict[str, Any]] = None
     updated_at: Optional[datetime] = None
     tags: Optional[Dict[str, str]] = None
-    arn: Optional[str] = None
     vpc_id: Optional[str] = None
     subnet_id: Optional[str] = None
     security_groups: Optional[list[str]] = None
