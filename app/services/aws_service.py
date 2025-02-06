@@ -1,72 +1,113 @@
 import boto3
 from botocore.exceptions import ClientError
-from ..schemas.aws import AWSCredentialsBase, ResourceSummary, StoredAWSCredentials
+from ..schemas.aws import AWSCredentialsBase, ResourceSummary
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 import uuid
+import logging
+from sqlalchemy.orm import Session
+from ..models import AWSCredentials, Project
+from uuid import UUID
 
-# In-memory storage for AWS credentials
-credentials_db: Dict[str, StoredAWSCredentials] = {}
+# Configure logging
+logger = logging.getLogger(__name__)
 
 class AWSService:
-    def __init__(self, credentials: AWSCredentialsBase):
-        """Initialize AWS service with credentials"""
-        self.credentials = credentials
-        self.session = boto3.Session(
-            aws_access_key_id=credentials.aws_access_key_id,
-            aws_secret_access_key=credentials.aws_secret_access_key,
-            region_name=credentials.region
-        )
+    def __init__(self, db: Session, project_id: str, user_id: str):
+        """Initialize AWS service with project ID and user ID"""
+        self.db = db
+        self.project_id = project_id
+        self.user_id = user_id
+        self.credentials = self.get_credentials(project_id, user_id, db)
+        if self.credentials:
+            self.session = boto3.Session(
+                aws_access_key_id=self.credentials.aws_access_key_id,
+                aws_secret_access_key=self.credentials.aws_secret_access_key,
+                region_name=self.credentials.region
+            )
+            logger.info(f"Initialized AWS service for region {self.credentials.region}")
+        else:
+            logger.error("Failed to initialize AWS service due to missing credentials")
+            raise ValueError("Failed to initialize AWS service due to missing credentials")
 
     def validate_credentials(self) -> bool:
         """Validate AWS credentials by attempting to list S3 buckets"""
         try:
             s3 = self.session.client('s3')
             s3.list_buckets()
+            logger.info("AWS credentials validated successfully")
             return True
         except ClientError as e:
             error_code = e.response['Error']['Code']
             error_message = e.response['Error']['Message']
+            logger.error(f"AWS Credentials validation failed: {error_code} - {error_message}")
             raise ValueError(f"AWS Credentials validation failed: {error_code} - {error_message}")
 
     def list_resources(self) -> List[ResourceSummary]:
         """List AWS resources in the account"""
         resources = []
+        logger.info("Starting AWS resource discovery...")
         
         try:
+            # Get account ID first since we'll need it for ARNs
+            try:
+                sts = self.session.client('sts')
+                account_id = sts.get_caller_identity()['Account']
+                logger.info(f"Using AWS Account ID: {account_id}")
+            except ClientError as e:
+                logger.error(f"Failed to get AWS account ID: {str(e)}")
+                raise ValueError("Failed to get AWS account ID. Please check your credentials.")
+
             # List S3 buckets
-            s3 = self.session.client('s3')
-            buckets = s3.list_buckets()['Buckets']
-            for bucket in buckets:
-                resources.append(ResourceSummary(
-                    type="s3",
-                    name=bucket['Name'],
-                    arn=f"arn:aws:s3:::{bucket['Name']}",
-                    region=self.credentials.region,
-                    created_at=bucket['CreationDate']
-                ))
+            try:
+                logger.info("Discovering S3 buckets...")
+                s3 = self.session.client('s3')
+                buckets = s3.list_buckets()['Buckets']
+                logger.info(f"Found {len(buckets)} S3 buckets")
+                for bucket in buckets:
+                    resources.append(ResourceSummary(
+                        type="s3",
+                        name=bucket['Name'],
+                        arn=f"arn:aws:s3:::{bucket['Name']}",
+                        region=self.credentials.region,
+                        created_at=bucket['CreationDate']
+                    ))
+            except ClientError as e:
+                logger.warning(f"Failed to list S3 buckets: {str(e)}")
 
             # List EC2 instances
-            ec2 = self.session.client('ec2')
-            instances = ec2.describe_instances()
-            for reservation in instances['Reservations']:
-                for instance in reservation['Instances']:
-                    resources.append(ResourceSummary(
-                        type="ec2",
-                        name=next((tag['Value'] for tag in instance.get('Tags', []) if tag['Key'] == 'Name'), instance['InstanceId']),
-                        arn=f"arn:aws:ec2:{self.credentials.region}:{instance['OwnerId']}:instance/{instance['InstanceId']}",
-                        region=self.credentials.region,
-                        created_at=instance['LaunchTime']
-                    ))
+            try:
+                logger.info("Discovering EC2 instances...")
+                ec2 = self.session.client('ec2')
+                instances = ec2.describe_instances()
+                instance_count = sum(len(r['Instances']) for r in instances['Reservations'])
+                logger.info(f"Found {instance_count} EC2 instances")
 
+                for reservation in instances['Reservations']:
+                    for instance in reservation['Instances']:
+                        name = next((tag['Value'] for tag in instance.get('Tags', []) if tag['Key'] == 'Name'), instance['InstanceId'])
+                        resources.append(ResourceSummary(
+                            type="ec2",
+                            name=name,
+                            arn=f"arn:aws:ec2:{self.credentials.region}:{account_id}:instance/{instance['InstanceId']}",
+                            region=self.credentials.region,
+                            created_at=instance['LaunchTime'],
+                            status=instance['State']['Name']
+                        ))
+                        logger.debug(f"Added EC2 instance: {name} ({instance['InstanceId']})")
+            except ClientError as e:
+                logger.warning(f"Failed to list EC2 instances: {str(e)}")
+
+            logger.info(f"Resource discovery completed. Found {len(resources)} total resources")
             return resources
-        except ClientError as e:
-            error_code = e.response['Error']['Code']
-            error_message = e.response['Error']['Message']
-            raise ValueError(f"Failed to list AWS resources: {error_code} - {error_message}")
+        except Exception as e:
+            error_message = f"Failed to list AWS resources: {str(e)}"
+            logger.error(error_message)
+            raise ValueError(error_message)
 
     def get_resource_details(self, resource_type: str, resource_id: str) -> Dict[str, Any]:
         """Get detailed information about a specific AWS resource"""
+        logger.info(f"Getting details for {resource_type} resource: {resource_id}")
         try:
             if resource_type == "s3":
                 s3 = self.session.client('s3')
@@ -81,6 +122,11 @@ class AWSService:
                 ec2 = self.session.client('ec2')
                 instance_details = ec2.describe_instances(InstanceIds=[resource_id])
                 instance = instance_details['Reservations'][0]['Instances'][0]
+                
+                # Get account ID
+                sts = self.session.client('sts')
+                account_id = sts.get_caller_identity()['Account']
+                
                 return {
                     "name": next((tag['Value'] for tag in instance.get('Tags', []) if tag['Key'] == 'Name'), instance['InstanceId']),
                     "type": "ec2",
@@ -89,32 +135,49 @@ class AWSService:
                     "launch_time": instance['LaunchTime'].isoformat(),
                     "public_ip": instance.get('PublicIpAddress'),
                     "private_ip": instance.get('PrivateIpAddress'),
-                    "arn": f"arn:aws:ec2:{self.credentials.region}:{instance['OwnerId']}:instance/{instance['InstanceId']}"
+                    "arn": f"arn:aws:ec2:{self.credentials.region}:{account_id}:instance/{instance['InstanceId']}"
                 }
             else:
+                logger.error(f"Unsupported resource type: {resource_type}")
                 raise ValueError(f"Unsupported resource type: {resource_type}")
         except ClientError as e:
             error_code = e.response['Error']['Code']
             error_message = e.response['Error']['Message']
+            logger.error(f"Failed to get resource details: {error_code} - {error_message}")
             raise ValueError(f"Failed to get resource details: {error_code} - {error_message}")
 
     @staticmethod
-    def store_credentials(credentials: AWSCredentialsBase, user_id: str) -> StoredAWSCredentials:
-        cred_id = str(uuid.uuid4())
-        now = datetime.utcnow()
-        stored_creds = StoredAWSCredentials(
-            id=cred_id,
-            created_at=now,
-            updated_at=now,
-            user_id=user_id,
-            **credentials.model_dump()
-        )
-        credentials_db[cred_id] = stored_creds
-        return stored_creds
-
-    @staticmethod
-    def get_credentials(project_id: str, user_id: str) -> Optional[StoredAWSCredentials]:
-        for cred in credentials_db.values():
-            if cred.project_id == project_id and cred.user_id == user_id:
-                return cred
-        return None
+    def get_credentials(project_id: str, user_id: str, db: Session) -> Optional[AWSCredentialsBase]:
+        """Get AWS credentials for a project from the database"""
+        try:
+            # Convert string IDs to UUIDs if they aren't already
+            project_uuid = project_id if isinstance(project_id, UUID) else UUID(project_id)
+            user_uuid = user_id if isinstance(user_id, UUID) else UUID(user_id)
+            
+            logger.info(f"Getting AWS credentials for project {project_uuid} and user {user_uuid}")
+            
+            # First verify the project belongs to the user
+            project = db.query(Project).filter(
+                Project.id == project_uuid,
+                Project.user_id == user_uuid
+            ).first()
+            
+            if not project:
+                logger.warning(f"Project {project_uuid} not found or does not belong to user {user_uuid}")
+                return None
+            
+            # Query the database for credentials
+            credentials = db.query(AWSCredentials).filter(
+                AWSCredentials.project_id == project_uuid
+            ).first()
+            
+            if credentials:
+                logger.info(f"Found AWS credentials for project {project_uuid}")
+                return credentials
+            
+            logger.warning(f"No AWS credentials found for project {project_uuid} (user: {user_uuid})")
+            return None
+            
+        except ValueError as e:
+            logger.error(f"Invalid UUID format - project_id: {project_id}, user_id: {user_id}. Error: {str(e)}")
+            return None

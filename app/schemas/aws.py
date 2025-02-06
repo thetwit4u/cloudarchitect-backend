@@ -40,13 +40,13 @@ class ResourceSummary(BaseModel):
     arn: str
     region: str
     created_at: datetime
+    status: Optional[str] = None
 
     class Config:
         from_attributes = True
 
 class ResourceDetails(ResourceSummary):
     id: str
-    status: Optional[str] = None
     project_id: str
     resource_metadata: Optional[Dict[str, Any]] = None
     updated_at: Optional[datetime] = None
