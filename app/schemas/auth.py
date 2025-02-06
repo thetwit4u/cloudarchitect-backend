@@ -1,6 +1,7 @@
-from pydantic import BaseModel, EmailStr, UUID4
+from pydantic import BaseModel, EmailStr
 from datetime import datetime
 from typing import Optional
+from pydantic import UUID4
 
 class UserBase(BaseModel):
     username: str
@@ -19,6 +20,9 @@ class UserResponse(UserBase):
 
     class Config:
         from_attributes = True
+        json_encoders = {
+            UUID4: lambda x: str(x)
+        }
 
 class Token(BaseModel):
     access_token: str

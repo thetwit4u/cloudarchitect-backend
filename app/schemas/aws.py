@@ -18,15 +18,21 @@ class AWSCredentialsResponse(AWSCredentialsBase):
 
     class Config:
         from_attributes = True
+        json_encoders = {
+            UUID4: lambda x: str(x)
+        }
 
 class StoredAWSCredentials(AWSCredentialsBase):
-    id: str
-    project_id: str
+    id: UUID4
+    project_id: UUID4
     created_at: datetime
     updated_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
+        json_encoders = {
+            UUID4: lambda x: str(x)
+        }
 
 class ResourceSummary(BaseModel):
     type: str

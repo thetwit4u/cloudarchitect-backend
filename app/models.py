@@ -8,7 +8,19 @@ import uuid
 def generate_uuid():
     return str(uuid.uuid4())
 
-class User(Base):
+class BaseModel(Base):
+    __abstract__ = True
+
+    def to_dict(self):
+        result = {}
+        for column in self.__table__.columns:
+            value = getattr(self, column.name)
+            if isinstance(value, uuid.UUID):
+                value = str(value)
+            result[column.name] = value
+        return result
+
+class User(BaseModel):
     __tablename__ = "users"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=generate_uuid)
@@ -23,7 +35,7 @@ class User(Base):
     # Relationships
     projects = relationship("Project", back_populates="user", cascade="all, delete-orphan")
 
-class Project(Base):
+class Project(BaseModel):
     __tablename__ = "projects"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=generate_uuid)
@@ -38,7 +50,7 @@ class Project(Base):
     resources = relationship("Resource", back_populates="project", cascade="all, delete-orphan")
     aws_credentials = relationship("AWSCredentials", back_populates="project", cascade="all, delete-orphan", uselist=False)
 
-class Resource(Base):
+class Resource(BaseModel):
     __tablename__ = "resources"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=generate_uuid)
@@ -52,7 +64,7 @@ class Resource(Base):
     # Relationships
     project = relationship("Project", back_populates="resources")
 
-class AWSCredentials(Base):
+class AWSCredentials(BaseModel):
     __tablename__ = "aws_credentials"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=generate_uuid)

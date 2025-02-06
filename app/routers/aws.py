@@ -8,7 +8,7 @@ from ..models import Project, AWSCredentials
 from typing import List
 from uuid import UUID
 
-router = APIRouter(prefix="/aws", tags=["aws"])
+router = APIRouter(tags=["aws"])
 
 @router.post("/credentials", response_model=StoredAWSCredentials)
 async def store_aws_credentials(

@@ -88,4 +88,5 @@ async def get_current_user_info(
     """
     Get current user information
     """
+    logger.info(f"Getting user info for {current_user.username} (id={current_user.id}, type={type(current_user.id)})")
     return current_user
