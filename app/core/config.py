@@ -7,6 +7,9 @@ class Settings(BaseSettings):
     VERSION: str = "0.1.0"
     API_V1_STR: str = "/api/v1"
     
+    # Database settings
+    DATABASE_URL: str = "postgresql://neondb_owner:npg_CRfG6edTcw5g@ep-nameless-mouse-a2uuclph-pooler.eu-central-1.aws.neon.tech/neondb?sslmode=require"
+    
     # JWT Settings
     SECRET_KEY: str = "your-secret-key-here"  # Change in production
     ALGORITHM: str = "HS256"

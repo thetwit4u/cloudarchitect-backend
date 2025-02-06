@@ -24,7 +24,7 @@ class ResourceSummary(BaseModel):
     status: Optional[str] = None
     project_id: str
     region: str
-    metadata: Optional[Dict[str, Any]] = None
+    resource_metadata: Optional[Dict[str, Any]] = None
 
 class ResourceDetails(ResourceSummary):
     created_at: Optional[datetime] = None
