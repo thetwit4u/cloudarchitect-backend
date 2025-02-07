@@ -45,6 +45,9 @@ class Resource(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=generate_uuid)
     name = Column(String)
     type = Column(String)  # e.g., "ec2", "s3", "rds"
+    arn = Column(String)  # AWS resource ARN
+    region = Column(String)  # AWS region
+    status = Column(String)  # Resource status (e.g., running, stopped)
     details = Column(String)  # JSON string of resource details
     project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id"))
     created_at = Column(DateTime(timezone=True), server_default=func.now())

@@ -14,8 +14,8 @@ def reset_database():
     
     # Parse the database URL
     url = urlparse(database_url)
-    db_name = url.path[1:] if url.path else 'cloud_architect'  # Remove leading '/' or use default
-    port = url.port if url.port else 5432  # Use default port if not specified
+    db_name = url.path[1:] if url.path else 'cloudarchitect'
+    port = url.port if url.port else 5432
     
     # Create connection parameters for postgres database
     params = {
@@ -50,26 +50,93 @@ def reset_database():
     finally:
         conn.close()
     
-    # Now connect to the new database and create alembic_version table
+    # Now connect to the new database and create tables
     params['dbname'] = db_name
     conn = psycopg2.connect(**params)
     conn.autocommit = True
     
     try:
         with conn.cursor() as cur:
-            # Create alembic_version table if it doesn't exist
+            # Create UUID extension if it doesn't exist
+            cur.execute("CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";")
+
+            # Create alembic_version table
             cur.execute("""
-                CREATE TABLE IF NOT EXISTS alembic_version (
+                CREATE TABLE alembic_version (
                     version_num VARCHAR(32) NOT NULL,
                     CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num)
                 );
             """)
-            # Clear any existing version
-            cur.execute("DELETE FROM alembic_version;")
+            # Set the current version to our latest known good migration
+            cur.execute("INSERT INTO alembic_version (version_num) VALUES ('12bc348e9691');")
+
+            # Create users table
+            cur.execute("""
+                CREATE TABLE users (
+                    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                    username VARCHAR NOT NULL UNIQUE,
+                    email VARCHAR NOT NULL UNIQUE,
+                    full_name VARCHAR NOT NULL,
+                    hashed_password VARCHAR NOT NULL,
+                    api_key VARCHAR UNIQUE,
+                    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP WITH TIME ZONE
+                );
+            """)
+            
+            # Create indexes for users table
+            cur.execute("CREATE INDEX ix_users_api_key ON users(api_key);")
+            cur.execute("CREATE INDEX ix_users_email ON users(email);")
+            cur.execute("CREATE INDEX ix_users_username ON users(username);")
+
+            # Create projects table
+            cur.execute("""
+                CREATE TABLE projects (
+                    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                    name VARCHAR NOT NULL,
+                    description VARCHAR,
+                    user_id UUID REFERENCES users(id) NOT NULL,
+                    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP WITH TIME ZONE
+                );
+            """)
+
+            # Create aws_credentials table
+            cur.execute("""
+                CREATE TABLE aws_credentials (
+                    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                    project_id UUID REFERENCES projects(id) NOT NULL,
+                    aws_access_key_id VARCHAR NOT NULL,
+                    aws_secret_access_key VARCHAR NOT NULL,
+                    region VARCHAR NOT NULL,
+                    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP WITH TIME ZONE
+                );
+            """)
+
+            # Create resources table
+            cur.execute("""
+                CREATE TABLE resources (
+                    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+                    name VARCHAR NOT NULL,
+                    type VARCHAR NOT NULL,
+                    arn VARCHAR NOT NULL,
+                    region VARCHAR NOT NULL,
+                    status VARCHAR NOT NULL,
+                    details VARCHAR,
+                    project_id UUID REFERENCES projects(id) NOT NULL,
+                    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP WITH TIME ZONE
+                );
+            """)
+
+            print("Tables created successfully.")
+            
     finally:
         conn.close()
     
-    print("Database is clean and ready for fresh migrations.")
+    print("Database is clean and ready to use.")
 
 if __name__ == "__main__":
     reset_database()
