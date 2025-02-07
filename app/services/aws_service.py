@@ -43,66 +43,108 @@ class AWSService:
             logger.error(f"AWS Credentials validation failed: {error_code} - {error_message}")
             raise ValueError(f"AWS Credentials validation failed: {error_code} - {error_message}")
 
+    def get_account_id(self) -> str:
+        """Get AWS account ID using STS"""
+        try:
+            sts = self.session.client('sts')
+            account_id = sts.get_caller_identity()['Account']
+            logger.info(f"Retrieved AWS account ID: {account_id}")
+            return account_id
+        except ClientError as e:
+            error_message = f"Failed to get AWS account ID: {str(e)}"
+            logger.error(error_message, exc_info=True)
+            raise ValueError(error_message)
+
     def list_resources(self) -> List[ResourceSummary]:
         """List AWS resources in the account"""
         resources = []
         logger.info("Starting AWS resource discovery...")
         
         try:
-            # Get account ID first since we'll need it for ARNs
-            try:
-                sts = self.session.client('sts')
-                account_id = sts.get_caller_identity()['Account']
-                logger.info(f"Using AWS Account ID: {account_id}")
-            except ClientError as e:
-                logger.error(f"Failed to get AWS account ID: {str(e)}")
-                raise ValueError("Failed to get AWS account ID. Please check your credentials.")
-
-            # List S3 buckets
-            try:
-                logger.info("Discovering S3 buckets...")
-                s3 = self.session.client('s3')
-                buckets = s3.list_buckets()['Buckets']
-                logger.info(f"Found {len(buckets)} S3 buckets")
-                for bucket in buckets:
-                    resources.append(ResourceSummary(
-                        type="s3",
-                        name=bucket['Name'],
-                        arn=f"arn:aws:s3:::{bucket['Name']}",
-                        region=self.credentials.region,
-                        created_at=bucket['CreationDate']
-                    ))
-            except ClientError as e:
-                logger.warning(f"Failed to list S3 buckets: {str(e)}")
-
             # List EC2 instances
-            try:
-                logger.info("Discovering EC2 instances...")
-                ec2 = self.session.client('ec2')
-                instances = ec2.describe_instances()
-                instance_count = sum(len(r['Instances']) for r in instances['Reservations'])
-                logger.info(f"Found {instance_count} EC2 instances")
-
-                for reservation in instances['Reservations']:
-                    for instance in reservation['Instances']:
-                        name = next((tag['Value'] for tag in instance.get('Tags', []) if tag['Key'] == 'Name'), instance['InstanceId'])
+            ec2 = self.session.client('ec2')
+            logger.info("Discovering EC2 instances...")
+            response = ec2.describe_instances()
+            
+            for reservation in response['Reservations']:
+                for instance in reservation['Instances']:
+                    logger.debug(f"Processing EC2 instance: {instance['InstanceId']}")
+                    
+                    # Get instance name from tags
+                    name = next((tag['Value'] for tag in instance.get('Tags', []) 
+                               if tag['Key'] == 'Name'), instance['InstanceId'])
+                    
+                    # Create ARN
+                    arn = f"arn:aws:ec2:{self.credentials.region}:{self.get_account_id()}:instance/{instance['InstanceId']}"
+                    
+                    # Convert datetime objects to strings for JSON serialization
+                    instance_details = {
+                        'InstanceId': instance['InstanceId'],
+                        'InstanceType': instance['InstanceType'],
+                        'State': instance['State']['Name'],
+                        'LaunchTime': instance['LaunchTime'].isoformat(),
+                        'PrivateIpAddress': instance.get('PrivateIpAddress'),
+                        'PublicIpAddress': instance.get('PublicIpAddress'),
+                        'Tags': instance.get('Tags', []),
+                        'SecurityGroups': instance.get('SecurityGroups', [])
+                    }
+                    
+                    resources.append(ResourceSummary(
+                        id=str(uuid.uuid4()),
+                        name=name,
+                        type='ec2',
+                        arn=arn,
+                        region=self.credentials.region,
+                        status=instance['State']['Name'],
+                        details=instance_details,
+                        created_at=instance['LaunchTime']
+                    ))
+            
+            logger.info(f"Discovered {len(resources)} EC2 instances")
+            
+            # List S3 buckets
+            s3 = self.session.client('s3')
+            logger.info("Discovering S3 buckets...")
+            buckets = s3.list_buckets()['Buckets']
+            
+            for bucket in buckets:
+                logger.debug(f"Processing S3 bucket: {bucket['Name']}")
+                try:
+                    # Get bucket location
+                    location = s3.get_bucket_location(Bucket=bucket['Name'])['LocationConstraint'] or 'us-east-1'
+                    
+                    # Only include buckets in our region
+                    if location == self.credentials.region:
+                        arn = f"arn:aws:s3:::{bucket['Name']}"
+                        
+                        # Convert datetime objects to strings for JSON serialization
+                        bucket_details = {
+                            'Name': bucket['Name'],
+                            'CreationDate': bucket['CreationDate'].isoformat(),
+                            'Location': location
+                        }
+                        
                         resources.append(ResourceSummary(
-                            type="ec2",
-                            name=name,
-                            arn=f"arn:aws:ec2:{self.credentials.region}:{account_id}:instance/{instance['InstanceId']}",
-                            region=self.credentials.region,
-                            created_at=instance['LaunchTime'],
-                            status=instance['State']['Name']
+                            id=str(uuid.uuid4()),
+                            name=bucket['Name'],
+                            type='s3',
+                            arn=arn,
+                            region=location,
+                            status='available',
+                            details=bucket_details,
+                            created_at=bucket['CreationDate']
                         ))
-                        logger.debug(f"Added EC2 instance: {name} ({instance['InstanceId']})")
-            except ClientError as e:
-                logger.warning(f"Failed to list EC2 instances: {str(e)}")
-
-            logger.info(f"Resource discovery completed. Found {len(resources)} total resources")
+                except ClientError as e:
+                    logger.warning(f"Error getting location for bucket {bucket['Name']}: {str(e)}")
+                    continue
+            
+            logger.info(f"Discovered {len(resources) - len(response['Reservations'])} S3 buckets")
+            
             return resources
-        except Exception as e:
-            error_message = f"Failed to list AWS resources: {str(e)}"
-            logger.error(error_message)
+            
+        except ClientError as e:
+            error_message = f"Error discovering AWS resources: {str(e)}"
+            logger.error(error_message, exc_info=True)
             raise ValueError(error_message)
 
     def get_resource_details(self, resource_type: str, resource_id: str) -> Dict[str, Any]:

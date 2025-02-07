@@ -34,17 +34,21 @@ def save_resource(db: Session, project_id: str, resource_data: dict):
 
     if existing:
         # Update existing resource
+        logger.info(f"Updating existing resource: {resource_data['arn']}")
         for key, value in resource_data.items():
             if key != "id" and hasattr(existing, key):
                 setattr(existing, key, value)
         resource = existing
+        logger.info(f"Resource updated successfully: {resource.arn}")
     else:
         # Create new resource
+        logger.info(f"Creating new resource: {resource_data['arn']}")
         resource = Resource(
             project_id=project_id,
             **resource_data
         )
         db.add(resource)
+        logger.info(f"New resource created successfully: {resource.arn}")
 
     return resource
 
@@ -59,6 +63,8 @@ async def discover_ec2_instances(
     """
     Discover EC2 instances for a project using stored AWS credentials
     """
+    logger.info(f"Starting EC2 discovery for project: {project_id}")
+    
     # Get project and verify access
     project = db.query(Project).filter(
         Project.id == project_id,
@@ -66,6 +72,7 @@ async def discover_ec2_instances(
     ).first()
     
     if not project:
+        logger.warning(f"Project not found: {project_id}")
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Project not found"
@@ -77,6 +84,7 @@ async def discover_ec2_instances(
     ).first()
     
     if not credentials:
+        logger.warning(f"AWS credentials not found for project: {project_id}")
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="AWS credentials not found"
@@ -84,28 +92,40 @@ async def discover_ec2_instances(
     
     # Initialize AWS client
     aws = get_aws_client(credentials)
+    logger.info(f"AWS client initialized for region: {credentials.region}")
     
     try:
         # Discover EC2 instances
-        instances = aws.list_ec2_instances()
+        instances = aws.discover_ec2_instances()
+        logger.info(f"Discovered {len(instances)} EC2 instances")
         
         # Save each instance to the database
         saved_resources = []
         for instance in instances:
+            # Create ARN for the instance
+            instance_arn = f"arn:aws:ec2:{credentials.region}:{aws.get_account_id()}:instance/{instance['instance_id']}"
+            
+            # Extract tags into a dictionary
+            tags = {tag['Key']: tag['Value'] for tag in instance.get('Tags', [])}
+            logger.debug(f"Processing instance: {instance['instance_id']} with tags: {tags}")
+            
+            # Prepare resource data
             resource_data = {
-                "name": instance.get("name", instance["instance_id"]),
+                "name": next((tag['Value'] for tag in instance.get('Tags', []) if tag['Key'] == 'Name'), instance['instance_id']),
                 "type": "ec2",
-                "arn": instance["arn"],
+                "arn": instance_arn,
                 "region": credentials.region,
-                "status": instance.get("state", {}).get("name"),
+                "status": instance['state'],
                 "details": json.dumps(instance)
             }
             
-            resource = save_resource(db, project_id, resource_data)
+            # Save to database
+            resource = save_resource(db, str(project.id), resource_data)
             saved_resources.append(resource)
         
         # Commit the transaction
         db.commit()
+        logger.info(f"Successfully saved {len(saved_resources)} EC2 instances to database")
         
         # Convert to response schema
         response_resources = [
@@ -137,7 +157,7 @@ async def discover_ec2_instances(
         
     except Exception as e:
         db.rollback()
-        logger.error(f"Error discovering EC2 instances: {str(e)}")
+        logger.error(f"Error discovering EC2 instances: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error discovering EC2 instances: {str(e)}"
@@ -153,6 +173,8 @@ async def list_ec2_instances(
     """
     List all discovered EC2 instances for a project
     """
+    logger.info(f"Fetching EC2 instances for project: {project_id}")
+    
     # Verify project access
     project = db.query(Project).filter(
         Project.id == project_id,
@@ -160,6 +182,7 @@ async def list_ec2_instances(
     ).first()
     
     if not project:
+        logger.warning(f"Project not found: {project_id}")
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Project not found"
@@ -171,15 +194,26 @@ async def list_ec2_instances(
         Resource.type == "ec2"
     ).all()
     
+    logger.info(f"Found {len(resources)} EC2 instances in database")
+    logger.debug("Resource details:")
+    for r in resources:
+        logger.debug(f"- {r.name} ({r.arn}): {r.status}")
+    
     # Convert to response schema
-    return [
+    result = [
         AWSResourceResponse(
-            id=str(r.id),
+            id=r.id,
             name=r.name,
             type=r.type,
             arn=r.arn,
             region=r.region,
             status=r.status,
-            details=EC2InstanceDetails(**json.loads(r.details))
+            details=EC2InstanceDetails(**json.loads(r.details)),
+            project_id=r.project_id,
+            created_at=r.created_at,
+            updated_at=r.updated_at
         ) for r in resources
     ]
+    
+    logger.info(f"Successfully returned {len(result)} EC2 instances")
+    return result

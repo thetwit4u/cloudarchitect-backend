@@ -35,12 +35,14 @@ class StoredAWSCredentials(AWSCredentialsBase):
         }
 
 class ResourceSummary(BaseModel):
+    id: str
     type: str
     name: str
     arn: str
     region: str
+    status: str
+    details: Optional[Dict[str, Any]] = None
     created_at: datetime
-    status: Optional[str] = None
 
     class Config:
         from_attributes = True

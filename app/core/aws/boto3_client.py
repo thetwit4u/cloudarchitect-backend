@@ -52,6 +52,17 @@ class AWSAPI:
             logger.error(f"Failed to connect to AWS: {str(e)}")
             return False
 
+    def get_account_id(self) -> str:
+        """
+        Get the AWS account ID using STS
+        """
+        try:
+            sts_client = self.get_client('sts')
+            return sts_client.get_caller_identity()['Account']
+        except ClientError as e:
+            logger.error(f"Failed to get AWS account ID: {str(e)}")
+            raise
+
     def discover_ec2_instances(self) -> list:
         """
         Discover EC2 instances in the current region

@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Column, ForeignKey, String, DateTime
+from sqlalchemy import Boolean, Column, ForeignKey, String, DateTime, JSON
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from sqlalchemy.dialects.postgresql import UUID
@@ -43,18 +43,33 @@ class Resource(Base):
     __tablename__ = "resources"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=generate_uuid)
-    name = Column(String)
-    type = Column(String)  # e.g., "ec2", "s3", "rds"
-    arn = Column(String)  # AWS resource ARN
+    name = Column(String, nullable=True)
+    type = Column(String, index=True)  # e.g., "ec2", "s3", "rds"
+    arn = Column(String, index=True, unique=True)  # AWS resource ARN
     region = Column(String)  # AWS region
     status = Column(String)  # Resource status (e.g., running, stopped)
-    details = Column(String)  # JSON string of resource details
+    details = Column(JSON)  # Resource details as JSON
     project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id"))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     # Relationships
     project = relationship("Project", back_populates="resources")
+
+    def to_dict(self):
+        """Convert the model instance to a dictionary"""
+        return {
+            "id": str(self.id),
+            "name": self.name,
+            "type": self.type,
+            "arn": self.arn,
+            "region": self.region,
+            "status": self.status,
+            "details": self.details,
+            "project_id": str(self.project_id),
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None
+        }
 
 class AWSCredentials(Base):
     __tablename__ = "aws_credentials"

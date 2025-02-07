@@ -5,10 +5,12 @@ from ..services.aws_service import AWSService
 from ..core.auth import get_current_user
 from ..schemas.auth import UserResponse
 from ..core.database import get_db
+from ..models import Resource, Project
 from sqlalchemy.orm import Session
 import logging
 from datetime import datetime, timedelta
-from uuid import UUID
+from uuid import UUID, uuid4
+import json
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -30,13 +32,53 @@ def _get_cached_resources(project_id: str) -> Optional[List[ResourceSummary]]:
             del _resource_cache[project_id]
     return None
 
-def _update_cache(project_id: str, resources: List[ResourceSummary]):
-    """Update the resource cache"""
-    logger.info(f"Updating resource cache for project {project_id} with {len(resources)} resources")
+def _update_cache(project_id: str, resources: List[ResourceSummary], db: Session):
+    """Update both the resource cache and database"""
+    logger.info(f"Updating resource cache and database for project {project_id} with {len(resources)} resources")
+    
+    # Update cache
     _resource_cache[project_id] = {
         'resources': resources,
         'timestamp': datetime.now()
     }
+    
+    # Update database
+    for resource in resources:
+        existing = db.query(Resource).filter(
+            Resource.arn == resource.arn,
+            Resource.project_id == UUID(project_id)
+        ).first()
+        
+        resource_data = {
+            "name": resource.name,
+            "type": resource.type,
+            "arn": resource.arn,
+            "region": resource.region,
+            "status": resource.status,
+            "details": json.dumps(resource.details) if resource.details else None,
+            "created_at": resource.created_at
+        }
+        
+        if existing:
+            logger.info(f"Updating existing resource in database: {resource.arn}")
+            for key, value in resource_data.items():
+                setattr(existing, key, value)
+        else:
+            logger.info(f"Creating new resource in database: {resource.arn}")
+            new_resource = Resource(
+                id=uuid4(),
+                project_id=UUID(project_id),
+                **resource_data
+            )
+            db.add(new_resource)
+    
+    try:
+        db.commit()
+        logger.info(f"Successfully persisted {len(resources)} resources to database")
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error persisting resources to database: {str(e)}", exc_info=True)
+        raise
 
 @router.get("/{project_id}/resources", response_model=List[ResourceSummary])
 def get_resources(
@@ -51,25 +93,53 @@ def get_resources(
     """
     logger.info(f"Getting resources for project {project_id}")
     
-    # Try to get resources from cache first
+    # Check project access
+    project = db.query(Project).filter(
+        Project.id == project_id,
+        Project.user_id == current_user.id
+    ).first()
+    
+    if not project:
+        logger.warning(f"Project not found: {project_id}")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found"
+        )
+    
+    # Try to get from cache first
     cached_resources = _get_cached_resources(str(project_id))
-    if cached_resources is not None:
-        logger.info("Using cached resources")
-        resources = cached_resources
-    else:
-        logger.info("No cached resources found")
-        return []
-
-    # Apply filters if provided
+    if cached_resources:
+        logger.info(f"Returning {len(cached_resources)} resources from cache")
+        return cached_resources
+    
+    # If not in cache, get from database
+    query = db.query(Resource).filter(Resource.project_id == project_id)
+    
     if resource_type:
-        logger.info(f"Filtering resources by type: {resource_type}")
-        resources = [r for r in resources if r.type == resource_type]
+        query = query.filter(Resource.type == resource_type)
     if region:
-        logger.info(f"Filtering resources by region: {region}")
-        resources = [r for r in resources if r.region == region]
-
-    logger.info(f"Returning {len(resources)} resources")
-    return resources
+        query = query.filter(Resource.region == region)
+    
+    resources = query.all()
+    logger.info(f"Found {len(resources)} resources in database")
+    
+    # Convert to ResourceSummary objects
+    summaries = [
+        ResourceSummary(
+            id=str(r.id),
+            name=r.name,
+            type=r.type,
+            arn=r.arn,
+            region=r.region,
+            status=r.status,
+            details=json.loads(r.details) if r.details else None
+        ) for r in resources
+    ]
+    
+    # Update cache with database results
+    _update_cache(str(project_id), summaries, db)
+    
+    return summaries
 
 @router.post("/{project_id}/resources/discover")
 def start_resource_discovery(
@@ -86,7 +156,7 @@ def start_resource_discovery(
         resources = aws_service.list_resources()
         
         # Update cache with new resources
-        _update_cache(str(project_id), resources)
+        _update_cache(str(project_id), resources, db)
         
         logger.info(f"Resource discovery completed. Found {len(resources)} resources")
         return {"status": "completed", "resource_count": len(resources)}
