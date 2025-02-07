@@ -55,8 +55,11 @@ class Resource(BaseModel):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=generate_uuid)
     name = Column(String)
-    type = Column(String)  # e.g., "ec2", "s3", "rds"
-    details = Column(String)  # JSON string of resource details
+    type = Column(String)
+    arn = Column(String, unique=True)
+    region = Column(String)
+    status = Column(String, nullable=True)
+    details = Column(String, nullable=True)  # JSON string for additional details
     project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id"))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

@@ -6,10 +6,11 @@ from sqlalchemy.orm import Session
 from typing import List
 from ..core.database import get_db
 from ..core.auth import get_current_user
-from ..models import Project, AWSCredentials, User, AWSResource
+from ..models import Project, AWSCredentials, User, Resource
 from ..schemas.aws_resources import AWSResourceResponse, EC2InstanceDetails
 from ..core.aws.boto3_client import AWSAPI
 import logging
+import json
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -21,6 +22,29 @@ def get_aws_client(credentials: AWSCredentials) -> AWSAPI:
         secret_access_key=credentials.aws_secret_access_key,
         region=credentials.region
     )
+
+def save_resource(db: Session, project_id: str, resource_data: dict):
+    """Save or update an AWS resource in the database"""
+    existing = db.query(Resource).filter(
+        Resource.arn == resource_data["arn"],
+        Resource.project_id == project_id
+    ).first()
+
+    if existing:
+        # Update existing resource
+        for key, value in resource_data.items():
+            if key != "id" and hasattr(existing, key):
+                setattr(existing, key, value)
+        resource = existing
+    else:
+        # Create new resource
+        resource = Resource(
+            project_id=project_id,
+            **resource_data
+        )
+        db.add(resource)
+
+    return resource
 
 @router.post("/projects/{project_id}/discover/ec2", 
             response_model=List[AWSResourceResponse],
@@ -53,56 +77,56 @@ async def discover_ec2_instances(
     if not credentials:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="AWS credentials not found for this project"
+            detail="AWS credentials not found"
         )
     
     # Initialize AWS client
-    aws_client = get_aws_client(credentials)
+    aws = get_aws_client(credentials)
     
     try:
         # Discover EC2 instances
-        instances = aws_client.discover_ec2_instances()
+        instances = aws.list_ec2_instances()
         
-        # Store discovered instances
-        resources = []
+        # Save each instance to the database
+        saved_resources = []
         for instance in instances:
-            # Create or update resource
-            resource = db.query(AWSResource).filter(
-                AWSResource.resource_id == instance['instance_id'],
-                AWSResource.project_id == project.id
-            ).first()
+            resource_data = {
+                "name": instance.get("name", instance["instance_id"]),
+                "type": "ec2",
+                "arn": instance["arn"],
+                "region": credentials.region,
+                "status": instance.get("state", {}).get("name"),
+                "details": json.dumps(instance)
+            }
             
-            if not resource:
-                resource = AWSResource(
-                    resource_id=instance['instance_id'],
-                    resource_type='ec2',
-                    name=next((tag['Value'] for tag in instance['tags'] 
-                             if tag['Key'] == 'Name'), None),
-                    region=credentials.region,
-                    details=instance,
-                    credentials_id=credentials.id,
-                    project_id=project.id
-                )
-                db.add(resource)
-            else:
-                resource.details = instance
-                resource.name = next((tag['Value'] for tag in instance['tags'] 
-                                    if tag['Key'] == 'Name'), None)
-            
-            resources.append(resource)
+            resource = save_resource(db, project_id, resource_data)
+            saved_resources.append(resource)
         
+        # Commit the transaction
         db.commit()
         
-        return resources
-    
+        # Convert to response schema
+        return [
+            AWSResourceResponse(
+                id=str(r.id),
+                name=r.name,
+                type=r.type,
+                arn=r.arn,
+                region=r.region,
+                status=r.status,
+                details=EC2InstanceDetails(**json.loads(r.details))
+            ) for r in saved_resources
+        ]
+        
     except Exception as e:
-        logger.error(f"Failed to discover EC2 instances: {str(e)}")
+        db.rollback()
+        logger.error(f"Error discovering EC2 instances: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to discover EC2 instances: {str(e)}"
+            detail=f"Error discovering EC2 instances: {str(e)}"
         )
 
-@router.get("/projects/{project_id}/resources/ec2", 
+@router.get("/projects/{project_id}/resources/ec2",
            response_model=List[AWSResourceResponse])
 async def list_ec2_instances(
     project_id: str,
@@ -124,10 +148,21 @@ async def list_ec2_instances(
             detail="Project not found"
         )
     
-    # Get EC2 resources
-    resources = db.query(AWSResource).filter(
-        AWSResource.project_id == project.id,
-        AWSResource.resource_type == 'ec2'
+    # Query resources
+    resources = db.query(Resource).filter(
+        Resource.project_id == project_id,
+        Resource.type == "ec2"
     ).all()
     
-    return resources
+    # Convert to response schema
+    return [
+        AWSResourceResponse(
+            id=str(r.id),
+            name=r.name,
+            type=r.type,
+            arn=r.arn,
+            region=r.region,
+            status=r.status,
+            details=EC2InstanceDetails(**json.loads(r.details))
+        ) for r in resources
+    ]
