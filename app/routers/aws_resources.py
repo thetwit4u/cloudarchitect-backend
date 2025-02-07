@@ -8,7 +8,9 @@ from ..core.database import get_db
 from ..core.auth import get_current_user
 from ..models import Project, AWSCredentials, User, Resource
 from ..schemas.aws_resources import AWSResourceResponse, EC2InstanceDetails
+from ..schemas.aws import ResourceSummary
 from ..core.aws.boto3_client import AWSAPI
+from .resources import _update_cache
 import logging
 import json
 
@@ -106,6 +108,21 @@ async def discover_ec2_instances(
         db.commit()
         
         # Convert to response schema
+        response_resources = [
+            ResourceSummary(
+                type=r.type,
+                name=r.name,
+                arn=r.arn,
+                region=r.region,
+                status=r.status,
+                created_at=r.created_at
+            ) for r in saved_resources
+        ]
+        
+        # Update the resource cache with the latest data
+        _update_cache(str(project_id), response_resources)
+        
+        # Convert to AWSResourceResponse for the API response
         return [
             AWSResourceResponse(
                 id=str(r.id),

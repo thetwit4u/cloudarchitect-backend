@@ -25,10 +25,14 @@ def _get_cached_resources(project_id: str) -> Optional[List[ResourceSummary]]:
         # Check if cache is still valid (less than 5 minutes old)
         if datetime.now() - cache_entry['timestamp'] < timedelta(minutes=5):
             return cache_entry['resources']
+        else:
+            # Remove expired cache entry
+            del _resource_cache[project_id]
     return None
 
 def _update_cache(project_id: str, resources: List[ResourceSummary]):
     """Update the resource cache"""
+    logger.info(f"Updating resource cache for project {project_id} with {len(resources)} resources")
     _resource_cache[project_id] = {
         'resources': resources,
         'timestamp': datetime.now()
@@ -126,12 +130,18 @@ def get_resource_summary(
     
     # Use cached resources if available
     cached_resources = _get_cached_resources(str(project_id))
+    last_scan_time = None
+    
+    if str(project_id) in _resource_cache:
+        last_scan_time = _resource_cache[str(project_id)]['timestamp']
+    
     if cached_resources is None:
         return {
             "total_resources": 0,
             "by_type": {},
             "by_status": {},
-            "regions": []
+            "regions": [],
+            "last_scan_at": last_scan_time.isoformat() if last_scan_time else None
         }
     
     resources = cached_resources
@@ -152,12 +162,13 @@ def get_resource_summary(
     # Get unique regions
     regions = sorted(list(set(r.region for r in resources if r.region)))
     
-    logger.info(f"Resource summary: {len(resources)} total, {type_summary} by type, {status_summary} by status, regions: {regions}")
+    logger.info(f"Resource summary: {len(resources)} total, {type_summary} by type, {status_summary} by status, regions: {regions}, last scan: {last_scan_time}")
     return {
         "total_resources": len(resources),
         "by_type": type_summary,
         "by_status": status_summary,
-        "regions": regions
+        "regions": regions,
+        "last_scan_at": last_scan_time.isoformat() if last_scan_time else None
     }
 
 @router.get("/{project_id}/resources/discover/status")
