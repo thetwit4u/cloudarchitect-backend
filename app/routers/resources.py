@@ -42,39 +42,63 @@ def _update_cache(project_id: str, resources: List[ResourceSummary], db: Session
         'timestamp': datetime.now()
     }
     
-    # Update database
-    for resource in resources:
-        existing = db.query(Resource).filter(
-            Resource.arn == resource.arn,
-            Resource.project_id == UUID(project_id)
-        ).first()
-        
-        resource_data = {
-            "name": resource.name,
-            "type": resource.type,
-            "arn": resource.arn,
-            "region": resource.region,
-            "status": resource.status,
-            "details": json.dumps(resource.details) if resource.details else None,
-            "created_at": resource.created_at
-        }
-        
-        if existing:
-            logger.info(f"Updating existing resource in database: {resource.arn}")
-            for key, value in resource_data.items():
-                setattr(existing, key, value)
-        else:
-            logger.info(f"Creating new resource in database: {resource.arn}")
-            new_resource = Resource(
-                id=uuid4(),
-                project_id=UUID(project_id),
-                **resource_data
-            )
-            db.add(new_resource)
-    
     try:
+        # First, get all existing resources for this project
+        existing_resources = db.query(Resource).filter(
+            Resource.project_id == UUID(project_id)
+        ).all()
+        logger.info(f"Found {len(existing_resources)} existing resources in database")
+        
+        # Create a map of ARNs to existing resources for faster lookup
+        existing_map = {r.arn: r for r in existing_resources}
+        
+        # Keep track of processed ARNs
+        processed_arns = set()
+        
+        # Update database
+        for resource in resources:
+            logger.debug(f"Processing resource: {resource.arn}")
+            processed_arns.add(resource.arn)
+            
+            resource_data = {
+                "name": resource.name,
+                "type": resource.type,
+                "arn": resource.arn,
+                "region": resource.region,
+                "status": resource.status,
+                "details": json.dumps(resource.details) if resource.details else None,
+                "created_at": resource.created_at
+            }
+            
+            if resource.arn in existing_map:
+                existing = existing_map[resource.arn]
+                logger.debug(f"Updating existing resource in database: {resource.arn}")
+                for key, value in resource_data.items():
+                    setattr(existing, key, value)
+            else:
+                logger.debug(f"Creating new resource in database: {resource.arn}")
+                new_resource = Resource(
+                    id=uuid4(),
+                    project_id=UUID(project_id),
+                    **resource_data
+                )
+                db.add(new_resource)
+        
+        # Delete resources that no longer exist
+        for existing in existing_resources:
+            if existing.arn not in processed_arns:
+                logger.info(f"Deleting removed resource from database: {existing.arn}")
+                db.delete(existing)
+        
         db.commit()
         logger.info(f"Successfully persisted {len(resources)} resources to database")
+        
+        # Verify the changes
+        final_count = db.query(Resource).filter(
+            Resource.project_id == UUID(project_id)
+        ).count()
+        logger.info(f"Final resource count in database: {final_count}")
+        
     except Exception as e:
         db.rollback()
         logger.error(f"Error persisting resources to database: {str(e)}", exc_info=True)
@@ -106,18 +130,14 @@ def get_resources(
             detail="Project not found"
         )
     
-    # Try to get from cache first
-    cached_resources = _get_cached_resources(str(project_id))
-    if cached_resources:
-        logger.info(f"Returning {len(cached_resources)} resources from cache")
-        return cached_resources
-    
-    # If not in cache, get from database
+    # Get from database
     query = db.query(Resource).filter(Resource.project_id == project_id)
     
     if resource_type:
+        logger.debug(f"Filtering by resource type: {resource_type}")
         query = query.filter(Resource.type == resource_type)
     if region:
+        logger.debug(f"Filtering by region: {region}")
         query = query.filter(Resource.region == region)
     
     resources = query.all()
@@ -132,13 +152,12 @@ def get_resources(
             arn=r.arn,
             region=r.region,
             status=r.status,
-            details=json.loads(r.details) if r.details else None
+            details=json.loads(r.details) if r.details else None,
+            created_at=r.created_at
         ) for r in resources
     ]
     
-    # Update cache with database results
-    _update_cache(str(project_id), summaries, db)
-    
+    logger.info(f"Returning {len(summaries)} resources")
     return summaries
 
 @router.post("/{project_id}/resources/discover")
@@ -152,16 +171,40 @@ def start_resource_discovery(
     """
     logger.info(f"Starting resource discovery for project {project_id}")
     try:
+        # Check project access
+        project = db.query(Project).filter(
+            Project.id == project_id,
+            Project.user_id == current_user.id
+        ).first()
+        
+        if not project:
+            logger.warning(f"Project not found: {project_id}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Project not found"
+            )
+        
         aws_service = AWSService(db, str(project_id), str(current_user.id))
         resources = aws_service.list_resources()
+        
+        logger.info(f"Resource discovery found {len(resources)} resources")
+        if resources:
+            logger.debug(f"First discovered resource: {resources[0].dict()}")
         
         # Update cache with new resources
         _update_cache(str(project_id), resources, db)
         
-        logger.info(f"Resource discovery completed. Found {len(resources)} resources")
-        return {"status": "completed", "resource_count": len(resources)}
-    except ValueError as e:
-        logger.error(f"Error during resource discovery: {str(e)}")
+        # Verify resources were saved
+        saved_resources = db.query(Resource).filter(Resource.project_id == project_id).all()
+        logger.info(f"Verified {len(saved_resources)} resources saved to database")
+        if saved_resources:
+            logger.debug(f"First saved resource: {vars(saved_resources[0])}")
+        
+        logger.info(f"Resource discovery completed successfully")
+        return {"message": "Resource discovery started", "resource_count": len(resources)}
+        
+    except Exception as e:
+        logger.error(f"Error during resource discovery: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(e)
@@ -198,47 +241,55 @@ def get_resource_summary(
     """
     logger.info(f"Getting resource summary for project {project_id}")
     
-    # Use cached resources if available
-    cached_resources = _get_cached_resources(str(project_id))
-    last_scan_time = None
+    # Check project access
+    project = db.query(Project).filter(
+        Project.id == project_id,
+        Project.user_id == current_user.id
+    ).first()
     
-    if str(project_id) in _resource_cache:
-        last_scan_time = _resource_cache[str(project_id)]['timestamp']
+    if not project:
+        logger.warning(f"Project not found: {project_id}")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Project not found"
+        )
     
-    if cached_resources is None:
-        return {
-            "total_resources": 0,
-            "by_type": {},
-            "by_status": {},
-            "regions": [],
-            "last_scan_at": last_scan_time.isoformat() if last_scan_time else None
-        }
+    # Get all resources from database
+    resources = db.query(Resource).filter(
+        Resource.project_id == project_id
+    ).all()
     
-    resources = cached_resources
+    logger.info(f"Found {len(resources)} resources in database")
     
-    # Count resources by type
+    # Initialize summary dictionaries
     type_summary = {}
-    for resource in resources:
-        resource_type = resource.type
-        type_summary[resource_type] = type_summary.get(resource_type, 0) + 1
-            
-    # Count resources by status
     status_summary = {}
+    region_summary = {}
+    
+    # Calculate summaries
     for resource in resources:
-        if resource.status:  # Only count resources that have a status
-            status = resource.status
-            status_summary[status] = status_summary.get(status, 0) + 1
+        # Type summary
+        if resource.type not in type_summary:
+            type_summary[resource.type] = 0
+        type_summary[resource.type] += 1
+        
+        # Status summary
+        if resource.status not in status_summary:
+            status_summary[resource.status] = 0
+        status_summary[resource.status] += 1
+        
+        # Region summary
+        if resource.region not in region_summary:
+            region_summary[resource.region] = 0
+        region_summary[resource.region] += 1
     
-    # Get unique regions
-    regions = sorted(list(set(r.region for r in resources if r.region)))
+    logger.info(f"Generated summary - Types: {len(type_summary)}, Statuses: {len(status_summary)}, Regions: {len(region_summary)}")
     
-    logger.info(f"Resource summary: {len(resources)} total, {type_summary} by type, {status_summary} by status, regions: {regions}, last scan: {last_scan_time}")
     return {
-        "total_resources": len(resources),
+        "total": len(resources),
         "by_type": type_summary,
         "by_status": status_summary,
-        "regions": regions,
-        "last_scan_at": last_scan_time.isoformat() if last_scan_time else None
+        "by_region": region_summary
     }
 
 @router.get("/{project_id}/resources/discover/status")
