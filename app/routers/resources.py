@@ -130,7 +130,8 @@ def get_resource_summary(
         return {
             "total_resources": 0,
             "by_type": {},
-            "by_status": {}
+            "by_status": {},
+            "regions": []
         }
     
     resources = cached_resources
@@ -148,11 +149,15 @@ def get_resource_summary(
             status = resource.status
             status_summary[status] = status_summary.get(status, 0) + 1
     
-    logger.info(f"Resource summary: {len(resources)} total, {type_summary} by type, {status_summary} by status")
+    # Get unique regions
+    regions = sorted(list(set(r.region for r in resources if r.region)))
+    
+    logger.info(f"Resource summary: {len(resources)} total, {type_summary} by type, {status_summary} by status, regions: {regions}")
     return {
         "total_resources": len(resources),
         "by_type": type_summary,
-        "by_status": status_summary
+        "by_status": status_summary,
+        "regions": regions
     }
 
 @router.get("/{project_id}/resources/discover/status")
