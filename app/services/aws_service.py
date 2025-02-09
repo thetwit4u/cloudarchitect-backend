@@ -56,6 +56,77 @@ class AWSService:
         """List all AWS resources for the project"""
         resources: List[ResourceSummary] = []
         
+        # Get S3 buckets with extended information
+        s3 = self.session.client('s3')
+        try:
+            buckets = s3.list_buckets()
+            for bucket in buckets['Buckets']:
+                bucket_name = bucket['Name']
+                # Get bucket location
+                try:
+                    location = s3.get_bucket_location(Bucket=bucket_name)
+                    region = location['LocationConstraint'] or 'us-east-1'
+                except ClientError:
+                    region = 'unknown'
+                    logger.warning(f"Could not get location for bucket {bucket_name}")
+
+                details = {
+                    'region': region,
+                    'creation_date': bucket['CreationDate'].isoformat(),
+                    'storage_classes': {},
+                    'public_access': {},
+                    'lifecycle_rules': [],
+                }
+
+                # Get public access block configuration
+                try:
+                    public_access = s3.get_public_access_block(Bucket=bucket_name)
+                    details['public_access'] = public_access['PublicAccessBlockConfiguration']
+                except ClientError as e:
+                    if e.response['Error']['Code'] != 'NoSuchPublicAccessBlockConfiguration':
+                        logger.warning(f"Error getting public access block for {bucket_name}: {str(e)}")
+
+                # Get bucket policy
+                try:
+                    policy = s3.get_bucket_policy(Bucket=bucket_name)
+                    details['has_bucket_policy'] = True
+                    details['is_public'] = 'Principal": "*"' in policy['Policy']
+                except ClientError as e:
+                    if e.response['Error']['Code'] != 'NoSuchBucketPolicy':
+                        logger.warning(f"Error getting bucket policy for {bucket_name}: {str(e)}")
+                    details['has_bucket_policy'] = False
+                    details['is_public'] = False
+
+                # Get lifecycle rules
+                try:
+                    lifecycle = s3.get_bucket_lifecycle_configuration(Bucket=bucket_name)
+                    details['lifecycle_rules'] = lifecycle.get('Rules', [])
+                except ClientError as e:
+                    if e.response['Error']['Code'] != 'NoSuchLifecycleConfiguration':
+                        logger.warning(f"Error getting lifecycle rules for {bucket_name}: {str(e)}")
+
+                # Get storage class analytics
+                try:
+                    analytics = s3.list_bucket_analytics_configurations(Bucket=bucket_name)
+                    for config in analytics.get('AnalyticsConfigurationList', []):
+                        if 'StorageClassAnalysis' in config:
+                            details['storage_classes'][config['Id']] = config['StorageClassAnalysis']
+                except ClientError as e:
+                    logger.warning(f"Error getting analytics for {bucket_name}: {str(e)}")
+
+                resources.append(ResourceSummary(
+                    id=uuid4(),
+                    resource_id=bucket_name,
+                    type='s3',
+                    name=bucket_name,
+                    region=region,
+                    status='available',
+                    created_at=bucket['CreationDate'],
+                    details=details
+                ))
+        except ClientError as e:
+            logger.error(f"Error listing S3 buckets: {str(e)}")
+
         # Get EC2 instances
         ec2 = self.session.client('ec2')
         instances = ec2.describe_instances()
@@ -136,76 +207,6 @@ class AWSService:
                     ]
                 }
             ))
-
-        # Get S3 buckets
-        s3 = self.session.client('s3')
-        try:
-            logger.info("Starting S3 bucket discovery")
-            buckets = s3.list_buckets()
-            logger.info(f"Found {len(buckets.get('Buckets', []))} S3 buckets")
-            
-            for bucket in buckets['Buckets']:
-                logger.info(f"Processing bucket: {bucket['Name']}")
-                # Get bucket location
-                try:
-                    location = s3.get_bucket_location(Bucket=bucket['Name'])
-                    bucket_region = location.get('LocationConstraint') or 'us-east-1'
-                    logger.debug(f"Bucket {bucket['Name']} is in region {bucket_region}")
-                except ClientError as e:
-                    logger.warning(f"Could not get location for bucket {bucket['Name']}: {str(e)}")
-                    bucket_region = 'unknown'
-
-                # Get bucket versioning status
-                try:
-                    versioning = s3.get_bucket_versioning(Bucket=bucket['Name'])
-                    versioning_status = versioning.get('Status', 'Disabled')
-                except ClientError as e:
-                    logger.warning(f"Could not get versioning for bucket {bucket['Name']}: {str(e)}")
-                    versioning_status = 'unknown'
-
-                # Get bucket encryption
-                try:
-                    encryption = s3.get_bucket_encryption(Bucket=bucket['Name'])
-                    encryption_rules = encryption.get('ServerSideEncryptionConfiguration', {}).get('Rules', [])
-                    encryption_enabled = bool(encryption_rules)
-                except ClientError as e:
-                    logger.debug(f"Could not get encryption for bucket {bucket['Name']}: {str(e)}")
-                    encryption_enabled = False
-
-                # Check if bucket is public
-                try:
-                    public_access = s3.get_public_access_block(Bucket=bucket['Name'])
-                    is_public = not all([
-                        public_access['PublicAccessBlockConfiguration'].get('BlockPublicAcls', False),
-                        public_access['PublicAccessBlockConfiguration'].get('BlockPublicPolicy', False),
-                        public_access['PublicAccessBlockConfiguration'].get('IgnorePublicAcls', False),
-                        public_access['PublicAccessBlockConfiguration'].get('RestrictPublicBuckets', False)
-                    ])
-                except ClientError as e:
-                    logger.debug(f"Could not get public access block for bucket {bucket['Name']}: {str(e)}")
-                    # If we can't get the public access block configuration, assume it might be public
-                    is_public = True
-
-                resources.append(ResourceSummary(
-                    id=uuid4(),
-                    resource_id=bucket['Name'],
-                    type='s3',
-                    name=bucket['Name'],
-                    region=bucket_region,
-                    status='available',  # S3 buckets are always available if we can list them
-                    created_at=bucket['CreationDate'],
-                    details={
-                        'status': 'available',
-                        'creation_date': bucket['CreationDate'].isoformat(),
-                        'region': bucket_region,
-                        'versioning': versioning_status,
-                        'encryption_enabled': encryption_enabled,
-                        'is_public': is_public
-                    }
-                ))
-                logger.info(f"Successfully added bucket {bucket['Name']} to resources")
-        except ClientError as e:
-            logger.error(f"Error listing S3 buckets: {str(e)}")
 
         # Get EKS clusters and node groups
         try:

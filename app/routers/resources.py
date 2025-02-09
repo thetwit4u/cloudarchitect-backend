@@ -34,7 +34,6 @@ def _get_cached_resources(project_id: str) -> Optional[List[ResourceSummary]]:
 
 def _update_cache(project_id: str, resources: List[ResourceSummary], db: Session):
     """Update both the resource cache and database"""
-    logger.info(f"Updating resource cache and database for project {project_id} with {len(resources)} resources")
     
     # Update cache
     _resource_cache[project_id] = {
@@ -48,7 +47,6 @@ def _update_cache(project_id: str, resources: List[ResourceSummary], db: Session
         existing_resources = db.query(Resource).filter(
             Resource.project_id == project_uuid
         ).all()
-        logger.info(f"Found {len(existing_resources)} existing resources in database")
         
         # Create a map of resource IDs to existing resources for faster lookup
         existing_map = {r.resource_id: r for r in existing_resources}
@@ -58,8 +56,12 @@ def _update_cache(project_id: str, resources: List[ResourceSummary], db: Session
         
         # Update database
         for resource in resources:
-            logger.debug(f"Processing resource: {resource.resource_id}")
             processed_ids.add(resource.resource_id)
+            
+            # Update details with status and region
+            details = resource.details if resource.details is not None else {}
+            details['status'] = resource.status
+            details['region'] = resource.region
             
             resource_data = {
                 "name": resource.name,
@@ -67,7 +69,7 @@ def _update_cache(project_id: str, resources: List[ResourceSummary], db: Session
                 "id": resource.id,
                 "resource_id": resource.resource_id,
                 "project_id": project_uuid,
-                "details": resource.details if resource.details is not None else {}
+                "details": details
             }
             
             if resource.resource_id in existing_map:
@@ -206,9 +208,7 @@ def get_resource_summary(
     current_user: UserResponse = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """
-    Get resource count summary by type and status
-    """
+    """Get resource count summary by type and status"""
     logger.info(f"Getting resource summary for project {project_id}")
 
     # Check project access
@@ -243,16 +243,15 @@ def get_resource_summary(
         by_type[resource_type] = by_type.get(resource_type, 0) + 1
         
         # Status summary based on resource type
-        status = resource.details.get('status', 'unknown')
-        
+        status = resource.details.get('status', 'unknown') if resource.details else 'unknown'
         by_status[status] = by_status.get(status, 0) + 1
         
-        # Region summary (from details)
-        region = resource.details.get('region', 'unknown')
+        # Region summary
+        region = resource.details.get('region', 'unknown') if resource.details else 'unknown'
         by_region[region] = by_region.get(region, 0) + 1
     
     return {
-        "total": len(resources),
+        "total": len(resources),  # Add total count back
         "by_type": by_type,
         "by_status": by_status,
         "by_region": by_region
