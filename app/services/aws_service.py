@@ -4,11 +4,10 @@ from ..schemas.aws import AWSCredentialsBase, ResourceSummary
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 import uuid
-from uuid import uuid4
+from uuid import UUID, uuid4
 import logging
 from sqlalchemy.orm import Session
 from ..models import AWSCredentials, Project
-from uuid import UUID
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -320,6 +319,80 @@ class AWSService:
         except ClientError as e:
             logger.error(f"Error listing EKS clusters: {str(e)}")
 
+        # List OpenSearch domains
+        try:
+            opensearch = self.session.client('opensearch')
+            domains = opensearch.list_domain_names()
+            for domain in domains.get('DomainNames', []):
+                domain_name = domain['DomainName']
+                try:
+                    domain_info = opensearch.describe_domain(DomainName=domain_name)['DomainStatus']
+                    
+                    # Get cluster health status
+                    try:
+                        health = opensearch.describe_domain_health(DomainName=domain_name)
+                        cluster_health = health.get('DomainHealth', {}).get('ClusterHealth', 'unknown')
+                    except ClientError:
+                        cluster_health = 'unknown'
+                    
+                    # Determine domain status
+                    status = 'active'
+                    if domain_info.get('Processing', False):
+                        status = 'processing'
+                    elif domain_info.get('Deleted', False):
+                        status = 'deleted'
+                    
+                    # Get creation time
+                    created_at = domain_info.get('Created')
+                    if not isinstance(created_at, datetime):
+                        # Use current time as fallback
+                        created_at = datetime.now()
+                    
+                    # Get instance counts by type
+                    instance_counts = {}
+                    if 'ClusterConfig' in domain_info:
+                        config = domain_info['ClusterConfig']
+                        if 'InstanceCount' in config:
+                            instance_type = config.get('InstanceType', 'unknown')
+                            instance_counts[instance_type] = config['InstanceCount']
+                        if 'WarmCount' in config:
+                            instance_type = config.get('WarmType', 'unknown')
+                            instance_counts[instance_type] = config['WarmCount']
+                    
+                    # Create a summary of the instances
+                    instance_summary = [
+                        f"{count}x {type}" 
+                        for type, count in instance_counts.items()
+                    ]
+                    
+                    resources.append(ResourceSummary(
+                        id=uuid4(),
+                        resource_id=domain_info['DomainId'],
+                        type='opensearch',
+                        name=domain_name,
+                        region=self.credentials.region,
+                        status=status,
+                        created_at=created_at,
+                        details={
+                            'endpoint': domain_info.get('Endpoints', {}).get('vpc'),
+                            'engine_version': domain_info.get('EngineVersion'),
+                            'instance_summary': ', '.join(instance_summary),
+                            'volume_size': domain_info.get('EBSOptions', {}).get('VolumeSize'),
+                            'volume_type': domain_info.get('EBSOptions', {}).get('VolumeType'),
+                            'vpc_id': domain_info.get('VPCOptions', {}).get('VPCId'),
+                            'zone_awareness': domain_info.get('ClusterConfig', {}).get('ZoneAwarenessEnabled', False),
+                            'dedicated_master': domain_info.get('ClusterConfig', {}).get('DedicatedMasterEnabled', False),
+                            'encryption_at_rest': domain_info.get('EncryptionAtRestOptions', {}).get('Enabled', False),
+                            'node_to_node_encryption': domain_info.get('NodeToNodeEncryptionOptions', {}).get('Enabled', False),
+                            'cluster_health': cluster_health,
+                            'tags': domain_info.get('Tags', {})
+                        }
+                    ))
+                except ClientError as e:
+                    logger.warning(f"Could not get details for OpenSearch domain {domain_name}: {str(e)}")
+        except ClientError as e:
+            logger.error(f"Error listing OpenSearch domains: {str(e)}")
+
         return resources
 
     def get_resource_details(self, resource_type: str, resource_id: str) -> Dict[str, Any]:
@@ -389,6 +462,43 @@ class AWSService:
                     "vpc_id": cluster['resourcesVpcConfig'].get('vpcId'),
                     "nodegroups": nodegroup_details,
                     "arn": cluster['arn']
+                }
+            elif resource_type == "opensearch":
+                opensearch = self.session.client('opensearch')
+                domain = opensearch.describe_domain(DomainName=resource_id)['DomainStatus']
+                
+                # Get instance counts by type
+                instance_counts = {}
+                if 'ClusterConfig' in domain:
+                    config = domain['ClusterConfig']
+                    if 'InstanceCount' in config:
+                        instance_type = config.get('InstanceType', 'unknown')
+                        instance_counts[instance_type] = config['InstanceCount']
+                    if 'WarmCount' in config:
+                        instance_type = config.get('WarmType', 'unknown')
+                        instance_counts[instance_type] = config['WarmCount']
+                
+                # Create a summary of the instances
+                instance_summary = [
+                    f"{count}x {type}" 
+                    for type, count in instance_counts.items()
+                ]
+                
+                return {
+                    "name": domain['DomainName'],
+                    "type": "opensearch",
+                    "status": domain['Processing'] and 'processing' or domain['Deleted'] and 'deleted' or 'active',
+                    "endpoint": domain.get('Endpoints', {}).get('vpc'),
+                    "engine_version": domain.get('EngineVersion'),
+                    "instance_summary": ', '.join(instance_summary),
+                    "volume_size": domain.get('EBSOptions', {}).get('VolumeSize'),
+                    "volume_type": domain.get('EBSOptions', {}).get('VolumeType'),
+                    "vpc_id": domain.get('VPCOptions', {}).get('VPCId'),
+                    "zone_awareness": domain.get('ClusterConfig', {}).get('ZoneAwarenessEnabled', False),
+                    "dedicated_master": domain.get('ClusterConfig', {}).get('DedicatedMasterEnabled', False),
+                    "encryption_at_rest": domain.get('EncryptionAtRestOptions', {}).get('Enabled', False),
+                    "node_to_node_encryption": domain.get('NodeToNodeEncryptionOptions', {}).get('Enabled', False),
+                    "tags": domain.get('Tags', {})
                 }
             else:
                 logger.error(f"Unsupported resource type: {resource_type}")
