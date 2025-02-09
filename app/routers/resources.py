@@ -44,8 +44,9 @@ def _update_cache(project_id: str, resources: List[ResourceSummary], db: Session
     
     try:
         # First, get all existing resources for this project
+        project_uuid = UUID(project_id)
         existing_resources = db.query(Resource).filter(
-            Resource.project_id == UUID(project_id)
+            Resource.project_id == project_uuid
         ).all()
         logger.info(f"Found {len(existing_resources)} existing resources in database")
         
@@ -62,11 +63,10 @@ def _update_cache(project_id: str, resources: List[ResourceSummary], db: Session
             
             resource_data = {
                 "name": resource.name,
-                "type": resource.resource_type.value,
+                "type": resource.resource_type,
                 "resource_id": resource.resource_id,
-                "region": resource.region,
-                "details": json.dumps(resource.details) if resource.details else None,
-                "project_id": UUID(project_id)
+                "project_id": project_uuid,
+                "details": resource.details
             }
             
             if resource.resource_id in existing_map:
@@ -125,7 +125,7 @@ def get_resources(
         query = query.filter(Resource.type == resource_type)
     if region:
         logger.debug(f"Filtering by region: {region}")
-        query = query.filter(Resource.region == region)
+        query = query.filter(Resource.details.get('region', 'unknown') == region)
     
     resources = query.all()
     logger.info(f"Found {len(resources)} resources in database")
@@ -137,8 +137,8 @@ def get_resources(
             name=r.name,
             type=r.type,
             arn=r.arn,
-            region=r.region,
-            status=r.status,
+            region=r.details.get('region', 'unknown') if r.details else 'unknown',
+            status=r.details.get('status', 'unknown') if r.details else 'unknown',
             details=json.loads(r.details) if r.details else None,
             created_at=r.created_at
         ) for r in resources
@@ -227,7 +227,7 @@ def get_resource_summary(
     Get resource count summary by type and status
     """
     logger.info(f"Getting resource summary for project {project_id}")
-    
+
     # Check project access
     project = db.query(Project).filter(
         Project.id == project_id,
@@ -249,29 +249,29 @@ def get_resource_summary(
     logger.info(f"Found {len(resources)} resources in database")
     
     # Initialize summary dictionaries
-    type_summary = {}
-    status_summary = {}
-    region_summary = {}
+    by_type = {}
+    by_status = {}
+    by_region = {}
     
     # Calculate summaries
     for resource in resources:
         # Type summary
         resource_type = resource.type
-        type_summary[resource_type] = type_summary.get(resource_type, 0) + 1
+        by_type[resource_type] = by_type.get(resource_type, 0) + 1
         
         # Status summary (from details)
         status = resource.details.get('status', 'unknown') if resource.details else 'unknown'
-        status_summary[status] = status_summary.get(status, 0) + 1
+        by_status[status] = by_status.get(status, 0) + 1
         
         # Region summary (from details)
         region = resource.details.get('region', 'unknown') if resource.details else 'unknown'
-        region_summary[region] = region_summary.get(region, 0) + 1
+        by_region[region] = by_region.get(region, 0) + 1
     
     return {
-        "type_summary": type_summary,
-        "status_summary": status_summary,
-        "region_summary": region_summary,
-        "total_resources": len(resources)
+        "total": len(resources),
+        "by_type": by_type,
+        "by_status": by_status,
+        "by_region": by_region
     }
 
 @router.get("/{project_id}/resources/discover/status")

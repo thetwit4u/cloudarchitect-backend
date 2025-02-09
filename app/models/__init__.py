@@ -43,29 +43,27 @@ class Project(Base):
 class Resource(Base):
     __tablename__ = "resources"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=generate_uuid)
-    name = Column(String, nullable=True)
-    type = Column(String, index=True)
-    resource_id = Column(String, index=True, unique=True)
-    details = Column(JSON)
-    project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id"))
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    name = Column(String, nullable=False)
+    type = Column(String, index=True, nullable=False)
+    resource_id = Column(String, index=True, nullable=False)
+    details = Column(JSON, nullable=True)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
-    # Relationships
     project = relationship("Project", back_populates="resources")
 
     def to_dict(self):
-        """Convert the model instance to a dictionary"""
         return {
-            'id': str(self.id),
-            'name': self.name,
-            'type': self.type,
-            'resource_id': self.resource_id,
-            'details': self.details,
-            'project_id': str(self.project_id),
-            'created_at': self.created_at.isoformat() if self.created_at else None,
-            'updated_at': self.updated_at.isoformat() if self.updated_at else None
+            "id": str(self.id),
+            "name": self.name,
+            "type": self.type,
+            "resource_id": self.resource_id,
+            "details": self.details,
+            "project_id": str(self.project_id),
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None
         }
 
 class AWSCredentials(Base):

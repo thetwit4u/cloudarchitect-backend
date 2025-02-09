@@ -1,7 +1,6 @@
 import boto3
 from botocore.exceptions import ClientError
 from ..schemas.aws import AWSCredentialsBase, ResourceSummary
-from ..models.aws_resources import ResourceType
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 import uuid
@@ -36,13 +35,10 @@ class AWSService:
         try:
             s3 = self.session.client('s3')
             s3.list_buckets()
-            logger.info("AWS credentials validated successfully")
             return True
         except ClientError as e:
-            error_code = e.response['Error']['Code']
-            error_message = e.response['Error']['Message']
-            logger.error(f"AWS Credentials validation failed: {error_code} - {error_message}")
-            raise ValueError(f"AWS Credentials validation failed: {error_code} - {error_message}")
+            logger.error(f"Failed to validate AWS credentials: {str(e)}", exc_info=True)
+            return False
 
     def get_account_id(self) -> str:
         """Get AWS account ID using STS"""
@@ -68,7 +64,7 @@ class AWSService:
                 name = next((tag['Value'] for tag in instance.get('Tags', []) if tag['Key'] == 'Name'), instance['InstanceId'])
                 resources.append(ResourceSummary(
                     resource_id=instance['InstanceId'],
-                    resource_type=ResourceType.EC2,
+                    resource_type='ec2',
                     name=name,
                     region=self.credentials.region,
                     details={
@@ -88,7 +84,7 @@ class AWSService:
             name = next((tag['Value'] for tag in vpc.get('Tags', []) if tag['Key'] == 'Name'), vpc['VpcId'])
             resources.append(ResourceSummary(
                 resource_id=vpc['VpcId'],
-                resource_type=ResourceType.VPC,
+                resource_type='vpc',
                 name=name,
                 region=self.credentials.region,
                 details={
@@ -110,7 +106,7 @@ class AWSService:
             name = lb['LoadBalancerName']
             resources.append(ResourceSummary(
                 resource_id=lb['LoadBalancerArn'],
-                resource_type=ResourceType.LOAD_BALANCER,
+                resource_type='load_balancer',
                 name=name,
                 region=self.credentials.region,
                 details={

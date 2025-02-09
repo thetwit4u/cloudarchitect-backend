@@ -35,15 +35,13 @@ class StoredAWSCredentials(AWSCredentialsBase):
 
 class ResourceSummary(BaseModel):
     resource_id: str
-    resource_type: ResourceType
+    resource_type: str
     name: str
-    region: str
     details: Optional[Dict[str, Any]] = None
 
     model_config = ConfigDict(
         from_attributes=True,
-        arbitrary_types_allowed=True,
-        use_enum_values=True
+        arbitrary_types_allowed=True
     )
 
 class ResourceDetails(ResourceSummary):
