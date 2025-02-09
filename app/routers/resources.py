@@ -259,12 +259,27 @@ def get_resource_summary(
         resource_type = resource.type
         by_type[resource_type] = by_type.get(resource_type, 0) + 1
         
-        # Status summary (from details)
-        status = resource.details.get('status', 'unknown') if resource.details else 'unknown'
+        # Status summary based on resource type
+        status = 'unknown'
+        details = resource.details if isinstance(resource.details, dict) else {}
+        
+        if resource_type == 'ec2':
+            state = details.get('state', {})
+            if isinstance(state, dict):
+                status = state.get('Name', 'unknown')
+            else:
+                status = str(state)
+        elif resource_type == 'vpc':
+            status = details.get('state', 'unknown')
+        elif resource_type == 'load_balancer':
+            status = details.get('state', 'unknown')
+        elif resource_type == 's3':
+            status = 'active'  # S3 buckets are always active
+        
         by_status[status] = by_status.get(status, 0) + 1
         
         # Region summary (from details)
-        region = resource.details.get('region', 'unknown') if resource.details else 'unknown'
+        region = details.get('region', 'unknown')
         by_region[region] = by_region.get(region, 0) + 1
     
     return {

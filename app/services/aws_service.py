@@ -129,20 +129,27 @@ class AWSService:
         # Get S3 buckets
         s3 = self.session.client('s3')
         try:
+            logger.info("Starting S3 bucket discovery")
             buckets = s3.list_buckets()
+            logger.info(f"Found {len(buckets.get('Buckets', []))} S3 buckets")
+            
             for bucket in buckets['Buckets']:
+                logger.info(f"Processing bucket: {bucket['Name']}")
                 # Get bucket location
                 try:
                     location = s3.get_bucket_location(Bucket=bucket['Name'])
                     bucket_region = location.get('LocationConstraint') or 'us-east-1'
-                except ClientError:
+                    logger.debug(f"Bucket {bucket['Name']} is in region {bucket_region}")
+                except ClientError as e:
+                    logger.warning(f"Could not get location for bucket {bucket['Name']}: {str(e)}")
                     bucket_region = 'unknown'
 
                 # Get bucket versioning status
                 try:
                     versioning = s3.get_bucket_versioning(Bucket=bucket['Name'])
                     versioning_status = versioning.get('Status', 'Disabled')
-                except ClientError:
+                except ClientError as e:
+                    logger.warning(f"Could not get versioning for bucket {bucket['Name']}: {str(e)}")
                     versioning_status = 'unknown'
 
                 # Get bucket encryption
@@ -150,7 +157,8 @@ class AWSService:
                     encryption = s3.get_bucket_encryption(Bucket=bucket['Name'])
                     encryption_rules = encryption.get('ServerSideEncryptionConfiguration', {}).get('Rules', [])
                     encryption_enabled = bool(encryption_rules)
-                except ClientError:
+                except ClientError as e:
+                    logger.debug(f"Could not get encryption for bucket {bucket['Name']}: {str(e)}")
                     encryption_enabled = False
 
                 resources.append(ResourceSummary(
@@ -165,6 +173,7 @@ class AWSService:
                         'encryption_enabled': encryption_enabled
                     }
                 ))
+                logger.info(f"Successfully added bucket {bucket['Name']} to resources")
         except ClientError as e:
             logger.error(f"Error listing S3 buckets: {str(e)}")
 

@@ -38,7 +38,6 @@ class Project(Base):
     user = relationship("User", back_populates="projects")
     resources = relationship("Resource", back_populates="project", cascade="all, delete-orphan")
     aws_credentials = relationship("AWSCredentials", back_populates="project", cascade="all, delete-orphan", uselist=False)
-    aws_resources = relationship("AWSResource", back_populates="project", cascade="all, delete-orphan")
 
 class Resource(Base):
     __tablename__ = "resources"
