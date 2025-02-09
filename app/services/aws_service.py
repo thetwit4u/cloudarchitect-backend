@@ -327,25 +327,44 @@ class AWSService:
                 domain_name = domain['DomainName']
                 try:
                     domain_info = opensearch.describe_domain(DomainName=domain_name)['DomainStatus']
+                    logger.info(f"OpenSearch domain info: {domain_info}")
                     
                     # Get cluster health status
                     try:
                         health = opensearch.describe_domain_health(DomainName=domain_name)
                         cluster_health = health.get('DomainHealth', {}).get('ClusterHealth', 'unknown')
-                    except ClientError:
+                        logger.info(f"OpenSearch health status: {cluster_health}")
+                    except ClientError as e:
+                        logger.warning(f"Could not get health status: {str(e)}")
                         cluster_health = 'unknown'
                     
-                    # Determine domain status
-                    status = 'active'
-                    if domain_info.get('Processing', False):
-                        status = 'processing'
-                    elif domain_info.get('Deleted', False):
-                        status = 'deleted'
+                    # Get region from ARN (format: arn:aws:es:region:account:domain/name)
+                    arn = domain_info.get('ARN')
+                    if arn and ':' in arn:
+                        try:
+                            region = arn.split(':')[3]
+                            logger.info(f"Extracted region from ARN: {region}")
+                        except (IndexError, AttributeError) as e:
+                            logger.warning(f"Could not extract region from ARN: {str(e)}")
+                            region = self.credentials.region
+                    else:
+                        logger.warning(f"No ARN found in domain info, using credentials region: {self.credentials.region}")
+                        region = self.credentials.region
+                    
+                    # Get status from DomainProcessingStatus
+                    domain_status = domain_info.get('DomainProcessingStatus', '').lower()
+                    if domain_status == 'active' and cluster_health != 'unknown':
+                        status = cluster_health  # Use cluster health if domain is active
+                    elif domain_status:
+                        status = domain_status  # Use domain status if available
+                    else:
+                        status = 'unknown'  # Fallback if no status is available
+                    
+                    logger.info(f"Final status: {status}")
                     
                     # Get creation time
                     created_at = domain_info.get('Created')
                     if not isinstance(created_at, datetime):
-                        # Use current time as fallback
                         created_at = datetime.now()
                     
                     # Get instance counts by type
@@ -355,9 +374,6 @@ class AWSService:
                         if 'InstanceCount' in config:
                             instance_type = config.get('InstanceType', 'unknown')
                             instance_counts[instance_type] = config['InstanceCount']
-                        if 'WarmCount' in config:
-                            instance_type = config.get('WarmType', 'unknown')
-                            instance_counts[instance_type] = config['WarmCount']
                     
                     # Create a summary of the instances
                     instance_summary = [
@@ -365,13 +381,12 @@ class AWSService:
                         for type, count in instance_counts.items()
                     ]
                     
-                    resources.append(ResourceSummary(
+                    # Create resource summary
+                    resource_summary = ResourceSummary(
                         id=uuid4(),
                         resource_id=domain_info['DomainId'],
                         type='opensearch',
                         name=domain_name,
-                        region=self.credentials.region,
-                        status=status,
                         created_at=created_at,
                         details={
                             'endpoint': domain_info.get('Endpoints', {}).get('vpc'),
@@ -385,9 +400,14 @@ class AWSService:
                             'encryption_at_rest': domain_info.get('EncryptionAtRestOptions', {}).get('Enabled', False),
                             'node_to_node_encryption': domain_info.get('NodeToNodeEncryptionOptions', {}).get('Enabled', False),
                             'cluster_health': cluster_health,
-                            'tags': domain_info.get('Tags', {})
+                            'tags': domain_info.get('Tags', {}),
+                            'region': region,
+                            'status': status
                         }
-                    ))
+                    )
+                    
+                    logger.info(f"Created resource summary: {resource_summary}")
+                    resources.append(resource_summary)
                 except ClientError as e:
                     logger.warning(f"Could not get details for OpenSearch domain {domain_name}: {str(e)}")
         except ClientError as e:

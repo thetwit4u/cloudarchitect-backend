@@ -38,10 +38,10 @@ class ResourceSummary(BaseModel):
     resource_id: str
     name: str
     type: str
-    region: str
-    status: str
-    details: Optional[Dict[str, Any]] = None
+    details: Dict[str, Any] = {}  # Default to empty dict
     created_at: datetime
+    region: str = 'unknown'
+    status: str = 'unknown'
 
     model_config = ConfigDict(
         from_attributes=True,

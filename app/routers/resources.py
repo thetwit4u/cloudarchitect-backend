@@ -67,7 +67,7 @@ def _update_cache(project_id: str, resources: List[ResourceSummary], db: Session
                 "id": resource.id,
                 "resource_id": resource.resource_id,
                 "project_id": project_uuid,
-                "details": resource.details
+                "details": resource.details if resource.details is not None else {}
             }
             
             if resource.resource_id in existing_map:
@@ -101,19 +101,17 @@ def get_resources(project_id: str, db: Session = Depends(get_db)) -> List[Resour
             Resource.project_id == project_uuid
         ).all()
         
-        # Convert database models to ResourceSummary schema
-        return [
-            ResourceSummary(
-                id=r.id,  
-                resource_id=r.resource_id,  
-                name=r.name,
-                type=r.type,
-                region=r.details.get('region', 'unknown'),
-                status=r.details.get('status', 'unknown'),
-                details=r.details,
-                created_at=r.created_at
-            ) for r in resources
-        ]
+        # Convert to ResourceSummary objects
+        return [ResourceSummary(
+            id=r.id,
+            resource_id=r.resource_id,  
+            name=r.name,
+            type=r.type,
+            details=r.details or {},  # Ensure details is never None
+            created_at=r.created_at,
+            region=r.details.get('region', 'unknown') if r.details else 'unknown',
+            status=r.details.get('status', 'unknown') if r.details else 'unknown'
+        ) for r in resources]
     except Exception as e:
         logger.error(f"Error getting resources: {str(e)}")
         raise HTTPException(
@@ -144,7 +142,8 @@ def start_resource_discovery(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Project not found"
             )
-        
+
+        # Initialize AWS service
         aws_service = AWSService(db, str(project_id), str(current_user.id))
         resources = aws_service.list_resources()
         
@@ -244,26 +243,12 @@ def get_resource_summary(
         by_type[resource_type] = by_type.get(resource_type, 0) + 1
         
         # Status summary based on resource type
-        status = 'unknown'
-        details = resource.details if isinstance(resource.details, dict) else {}
-        
-        if resource_type == 'ec2':
-            state = details.get('state', {})
-            if isinstance(state, dict):
-                status = state.get('Name', 'unknown')
-            else:
-                status = str(state)
-        elif resource_type == 'vpc':
-            status = details.get('state', 'unknown')
-        elif resource_type == 'load_balancer':
-            status = details.get('state', 'unknown')
-        elif resource_type == 's3':
-            status = 'active'  # S3 buckets are always active
+        status = resource.details.get('status', 'unknown')
         
         by_status[status] = by_status.get(status, 0) + 1
         
         # Region summary (from details)
-        region = details.get('region', 'unknown')
+        region = resource.details.get('region', 'unknown')
         by_region[region] = by_region.get(region, 0) + 1
     
     return {
