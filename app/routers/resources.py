@@ -285,11 +285,18 @@ def get_discovery_status(
     logger.info(f"Checking discovery status for project {project_id}")
     try:
         aws_service = AWSService(db, str(project_id), str(current_user.id))
-        # For now, we'll return a simple status since discovery is synchronous
+        # Get the latest resource to determine last scan time
+        latest_resource = db.query(Resource).filter(
+            Resource.project_id == project_id
+        ).order_by(Resource.created_at.desc()).first()
+        
+        last_scan_at = latest_resource.created_at if latest_resource else None
+        
         logger.info("Discovery status: completed")
         return {
             "status": "completed",
-            "message": "Resource discovery is complete"
+            "message": "Resource discovery is complete",
+            "last_scan_at": last_scan_at.isoformat() if last_scan_at else None
         }
     except ValueError as e:
         logger.error(f"Error checking discovery status: {str(e)}")
