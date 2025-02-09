@@ -208,6 +208,73 @@ class AWSService:
         except ClientError as e:
             logger.error(f"Error listing S3 buckets: {str(e)}")
 
+        # Get EKS clusters and node groups
+        try:
+            logger.info("Starting EKS cluster discovery")
+            eks = self.session.client('eks')
+            clusters = eks.list_clusters()
+            
+            for cluster_name in clusters['clusters']:
+                # Get cluster details
+                cluster = eks.describe_cluster(name=cluster_name)['cluster']
+                
+                # Get node groups for this cluster
+                nodegroups = eks.list_nodegroups(clusterName=cluster_name)
+                nodegroup_details = []
+                
+                for nodegroup_name in nodegroups.get('nodegroups', []):
+                    try:
+                        nodegroup = eks.describe_nodegroup(
+                            clusterName=cluster_name,
+                            nodegroupName=nodegroup_name
+                        )['nodegroup']
+                        
+                        nodegroup_details.append({
+                            'name': nodegroup_name,
+                            'status': nodegroup['status'],
+                            'capacity_type': nodegroup.get('capacityType'),
+                            'instance_types': nodegroup.get('instanceTypes', []),
+                            'disk_size': nodegroup.get('diskSize'),
+                            'scaling_config': nodegroup.get('scalingConfig', {}),
+                            'subnet_ids': nodegroup.get('subnets', []),
+                            'node_role': nodegroup.get('nodeRole'),
+                            'labels': nodegroup.get('labels', {})
+                        })
+                    except ClientError as e:
+                        logger.warning(f"Could not get details for nodegroup {nodegroup_name}: {str(e)}")
+                
+                # Add cluster as a resource
+                resources.append(ResourceSummary(
+                    id=uuid4(),
+                    resource_id=cluster['name'],
+                    type='eks',
+                    name=cluster['name'],
+                    region=self.credentials.region,
+                    status=cluster['status'],
+                    created_at=cluster['createdAt'],
+                    details={
+                        'status': cluster['status'],
+                        'version': cluster['version'],
+                        'endpoint': cluster['endpoint'],
+                        'role_arn': cluster['roleArn'],
+                        'vpc_config': {
+                            'vpc_id': cluster['resourcesVpcConfig'].get('vpcId'),
+                            'subnet_ids': cluster['resourcesVpcConfig'].get('subnetIds', []),
+                            'security_groups': cluster['resourcesVpcConfig'].get('securityGroupIds', []),
+                            'cluster_security_group': cluster['resourcesVpcConfig'].get('clusterSecurityGroupId'),
+                            'endpoint_public_access': cluster['resourcesVpcConfig'].get('endpointPublicAccess'),
+                            'endpoint_private_access': cluster['resourcesVpcConfig'].get('endpointPrivateAccess')
+                        },
+                        'logging': cluster.get('logging', {}).get('clusterLogging', []),
+                        'nodegroups': nodegroup_details,
+                        'tags': cluster.get('tags', {})
+                    }
+                ))
+                logger.info(f"Successfully added EKS cluster {cluster_name} to resources")
+                
+        except ClientError as e:
+            logger.error(f"Error listing EKS clusters: {str(e)}")
+
         return resources
 
     def get_resource_details(self, resource_type: str, resource_id: str) -> Dict[str, Any]:
@@ -241,6 +308,42 @@ class AWSService:
                     "public_ip": instance.get('PublicIpAddress'),
                     "private_ip": instance.get('PrivateIpAddress'),
                     "arn": f"arn:aws:ec2:{self.credentials.region}:{account_id}:instance/{instance['InstanceId']}"
+                }
+            elif resource_type == "eks":
+                eks = self.session.client('eks')
+                cluster = eks.describe_cluster(name=resource_id)['cluster']
+                
+                # Get node groups
+                nodegroups = eks.list_nodegroups(clusterName=resource_id)
+                nodegroup_details = []
+                
+                for nodegroup_name in nodegroups.get('nodegroups', []):
+                    try:
+                        nodegroup = eks.describe_nodegroup(
+                            clusterName=resource_id,
+                            nodegroupName=nodegroup_name
+                        )['nodegroup']
+                        
+                        nodegroup_details.append({
+                            'name': nodegroup_name,
+                            'status': nodegroup['status'],
+                            'capacity_type': nodegroup.get('capacityType'),
+                            'instance_types': nodegroup.get('instanceTypes', []),
+                            'scaling_config': nodegroup.get('scalingConfig', {}),
+                            'current_size': nodegroup.get('scalingConfig', {}).get('desiredSize', 0)
+                        })
+                    except ClientError as e:
+                        logger.warning(f"Could not get details for nodegroup {nodegroup_name}: {str(e)}")
+                
+                return {
+                    "name": cluster['name'],
+                    "type": "eks",
+                    "status": cluster['status'],
+                    "version": cluster['version'],
+                    "endpoint": cluster['endpoint'],
+                    "vpc_id": cluster['resourcesVpcConfig'].get('vpcId'),
+                    "nodegroups": nodegroup_details,
+                    "arn": cluster['arn']
                 }
             else:
                 logger.error(f"Unsupported resource type: {resource_type}")
