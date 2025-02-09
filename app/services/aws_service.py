@@ -173,6 +173,20 @@ class AWSService:
                     logger.debug(f"Could not get encryption for bucket {bucket['Name']}: {str(e)}")
                     encryption_enabled = False
 
+                # Check if bucket is public
+                try:
+                    public_access = s3.get_public_access_block(Bucket=bucket['Name'])
+                    is_public = not all([
+                        public_access['PublicAccessBlockConfiguration'].get('BlockPublicAcls', False),
+                        public_access['PublicAccessBlockConfiguration'].get('BlockPublicPolicy', False),
+                        public_access['PublicAccessBlockConfiguration'].get('IgnorePublicAcls', False),
+                        public_access['PublicAccessBlockConfiguration'].get('RestrictPublicBuckets', False)
+                    ])
+                except ClientError as e:
+                    logger.debug(f"Could not get public access block for bucket {bucket['Name']}: {str(e)}")
+                    # If we can't get the public access block configuration, assume it might be public
+                    is_public = True
+
                 resources.append(ResourceSummary(
                     id=uuid4(),
                     resource_id=bucket['Name'],
@@ -186,7 +200,8 @@ class AWSService:
                         'creation_date': bucket['CreationDate'].isoformat(),
                         'region': bucket_region,
                         'versioning': versioning_status,
-                        'encryption_enabled': encryption_enabled
+                        'encryption_enabled': encryption_enabled,
+                        'is_public': is_public
                     }
                 ))
                 logger.info(f"Successfully added bucket {bucket['Name']} to resources")
