@@ -8,7 +8,6 @@ from uuid import UUID, uuid4
 import logging
 from sqlalchemy.orm import Session
 from ..models import AWSCredentials, Project
-from .resources import S3Resource, VPCResource
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -58,8 +57,75 @@ class AWSService:
         resources: List[ResourceSummary] = []
         
         # Get S3 buckets with extended information
-        s3_resource = S3Resource(self.session, self.credentials.region)
-        resources.extend(s3_resource.list_resources())
+        s3 = self.session.client('s3')
+        try:
+            buckets = s3.list_buckets()
+            for bucket in buckets['Buckets']:
+                bucket_name = bucket['Name']
+                # Get bucket location
+                try:
+                    location = s3.get_bucket_location(Bucket=bucket_name)
+                    region = location['LocationConstraint'] or 'us-east-1'
+                except ClientError:
+                    region = 'unknown'
+                    logger.warning(f"Could not get location for bucket {bucket_name}")
+
+                details = {
+                    'region': region,
+                    'creation_date': bucket['CreationDate'].isoformat(),
+                    'storage_classes': {},
+                    'public_access': {},
+                    'lifecycle_rules': [],
+                }
+
+                # Get public access block configuration
+                try:
+                    public_access = s3.get_public_access_block(Bucket=bucket_name)
+                    details['public_access'] = public_access['PublicAccessBlockConfiguration']
+                except ClientError as e:
+                    if e.response['Error']['Code'] != 'NoSuchPublicAccessBlockConfiguration':
+                        logger.warning(f"Error getting public access block for {bucket_name}: {str(e)}")
+
+                # Get bucket policy
+                try:
+                    policy = s3.get_bucket_policy(Bucket=bucket_name)
+                    details['has_bucket_policy'] = True
+                    details['is_public'] = 'Principal": "*"' in policy['Policy']
+                except ClientError as e:
+                    if e.response['Error']['Code'] != 'NoSuchBucketPolicy':
+                        logger.warning(f"Error getting bucket policy for {bucket_name}: {str(e)}")
+                    details['has_bucket_policy'] = False
+                    details['is_public'] = False
+
+                # Get lifecycle rules
+                try:
+                    lifecycle = s3.get_bucket_lifecycle_configuration(Bucket=bucket_name)
+                    details['lifecycle_rules'] = lifecycle.get('Rules', [])
+                except ClientError as e:
+                    if e.response['Error']['Code'] != 'NoSuchLifecycleConfiguration':
+                        logger.warning(f"Error getting lifecycle rules for {bucket_name}: {str(e)}")
+
+                # Get storage class analytics
+                try:
+                    analytics = s3.list_bucket_analytics_configurations(Bucket=bucket_name)
+                    for config in analytics.get('AnalyticsConfigurationList', []):
+                        if 'StorageClassAnalysis' in config:
+                            details['storage_classes'][config['Id']] = config['StorageClassAnalysis']
+                except ClientError as e:
+                    logger.warning(f"Error getting analytics for {bucket_name}: {str(e)}")
+
+                resources.append(ResourceSummary(
+                    id=uuid4(),
+                    resource_id=bucket_name,
+                    type='s3',
+                    name=bucket_name,
+                    region=region,
+                    status='available',
+                    created_at=bucket['CreationDate'],
+                    details=details
+                ))
+        except ClientError as e:
+            logger.error(f"Error listing S3 buckets: {str(e)}")
 
         # Get EC2 instances
         ec2 = self.session.client('ec2')
@@ -74,19 +140,40 @@ class AWSService:
                     name=name,
                     region=self.credentials.region,
                     status=instance['State']['Name'],
-                    created_at=instance['LaunchTime'],
+                    created_at=datetime.now(),
                     details={
                         'status': instance['State']['Name'],
+                        'region': self.credentials.region,
                         'instance_type': instance['InstanceType'],
+                        'private_ip': instance.get('PrivateIpAddress'),
+                        'public_ip': instance.get('PublicIpAddress'),
                         'vpc_id': instance.get('VpcId'),
                         'subnet_id': instance.get('SubnetId'),
                         'security_groups': [sg['GroupId'] for sg in instance.get('SecurityGroups', [])]
                     }
                 ))
 
-        # Get VPCs using VPCResource
-        vpc_resource = VPCResource(self.session, self.credentials.region)
-        resources.extend(vpc_resource.list_resources())
+        # Get VPCs
+        vpcs = ec2.describe_vpcs()
+        for vpc in vpcs['Vpcs']:
+            name = next((tag['Value'] for tag in vpc.get('Tags', []) if tag['Key'] == 'Name'), vpc['VpcId'])
+            resources.append(ResourceSummary(
+                id=uuid4(),
+                resource_id=vpc['VpcId'],
+                type='vpc',
+                name=name,
+                region=self.credentials.region,
+                status=vpc['State'],
+                created_at=datetime.now(),
+                details={
+                    'status': vpc['State'],
+                    'cidr_block': vpc['CidrBlock'],
+                    'state': vpc['State'],
+                    'is_default': vpc.get('IsDefault', False),
+                    'dhcp_options_id': vpc.get('DhcpOptionsId'),
+                    'instance_tenancy': vpc.get('InstanceTenancy')
+                }
+            ))
 
         # Get Load Balancers and their listeners
         elb = self.session.client('elbv2')
@@ -335,43 +422,37 @@ class AWSService:
 
     def get_resource_details(self, resource_type: str, resource_id: str) -> Dict[str, Any]:
         """Get detailed information about a specific AWS resource"""
+        logger.info(f"Getting details for {resource_type} resource: {resource_id}")
         try:
-            if resource_type == 'ec2':
+            if resource_type == "s3":
+                s3 = self.session.client('s3')
+                bucket_details = s3.get_bucket_location(Bucket=resource_id)
+                return {
+                    "name": resource_id,
+                    "type": "s3",
+                    "location": bucket_details['LocationConstraint'] or "us-east-1",
+                    "arn": f"arn:aws:s3:::{resource_id}"
+                }
+            elif resource_type == "ec2":
                 ec2 = self.session.client('ec2')
-                instance = ec2.describe_instances(InstanceIds=[resource_id])['Reservations'][0]['Instances'][0]
+                instance_details = ec2.describe_instances(InstanceIds=[resource_id])
+                instance = instance_details['Reservations'][0]['Instances'][0]
+                
+                # Get account ID
+                sts = self.session.client('sts')
+                account_id = sts.get_caller_identity()['Account']
+                
                 return {
-                    'status': instance['State']['Name'],
-                    'instance_type': instance['InstanceType'],
-                    'vpc_id': instance.get('VpcId'),
-                    'subnet_id': instance.get('SubnetId'),
-                    'security_groups': [sg['GroupId'] for sg in instance.get('SecurityGroups', [])]
+                    "name": next((tag['Value'] for tag in instance.get('Tags', []) if tag['Key'] == 'Name'), instance['InstanceId']),
+                    "type": "ec2",
+                    "state": instance['State']['Name'],
+                    "instance_type": instance['InstanceType'],
+                    "launch_time": instance['LaunchTime'].isoformat(),
+                    "public_ip": instance.get('PublicIpAddress'),
+                    "private_ip": instance.get('PrivateIpAddress'),
+                    "arn": f"arn:aws:ec2:{self.credentials.region}:{account_id}:instance/{instance['InstanceId']}"
                 }
-            elif resource_type == 'vpc':
-                vpc_resource = VPCResource(self.session, self.credentials.region)
-                return vpc_resource.get_resource_details(resource_id)
-            elif resource_type == 's3':
-                s3_resource = S3Resource(self.session, self.credentials.region)
-                return s3_resource.get_resource_details(resource_id)
-            elif resource_type == 'load_balancer':
-                elb = self.session.client('elbv2')
-                lb = elb.describe_load_balancers(LoadBalancerArns=[resource_id])['LoadBalancers'][0]
-                listeners = elb.describe_listeners(LoadBalancerArn=resource_id)
-                return {
-                    'status': lb.get('State', {}).get('Code', 'unknown'),
-                    'dns_name': lb['DNSName'],
-                    'scheme': lb.get('Scheme'),
-                    'vpc_id': lb.get('VpcId'),
-                    'type': lb.get('Type'),
-                    'availability_zones': [az.get('ZoneName') for az in lb.get('AvailabilityZones', [])],
-                    'listeners': [
-                        {
-                            'protocol': listener['Protocol'],
-                            'port': listener['Port']
-                        }
-                        for listener in listeners.get('Listeners', [])
-                    ]
-                }
-            elif resource_type == 'eks':
+            elif resource_type == "eks":
                 eks = self.session.client('eks')
                 cluster = eks.describe_cluster(name=resource_id)['cluster']
                 
