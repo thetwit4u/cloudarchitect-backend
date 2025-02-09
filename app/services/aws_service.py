@@ -119,13 +119,54 @@ class AWSService:
                     'listeners': [
                         {
                             'protocol': listener['Protocol'],
-                            'port': listener['Port'],
-                            'arn': listener['ListenerArn']
+                            'port': listener['Port']
                         }
                         for listener in listeners.get('Listeners', [])
                     ]
                 }
             ))
+
+        # Get S3 buckets
+        s3 = self.session.client('s3')
+        try:
+            buckets = s3.list_buckets()
+            for bucket in buckets['Buckets']:
+                # Get bucket location
+                try:
+                    location = s3.get_bucket_location(Bucket=bucket['Name'])
+                    bucket_region = location.get('LocationConstraint') or 'us-east-1'
+                except ClientError:
+                    bucket_region = 'unknown'
+
+                # Get bucket versioning status
+                try:
+                    versioning = s3.get_bucket_versioning(Bucket=bucket['Name'])
+                    versioning_status = versioning.get('Status', 'Disabled')
+                except ClientError:
+                    versioning_status = 'unknown'
+
+                # Get bucket encryption
+                try:
+                    encryption = s3.get_bucket_encryption(Bucket=bucket['Name'])
+                    encryption_rules = encryption.get('ServerSideEncryptionConfiguration', {}).get('Rules', [])
+                    encryption_enabled = bool(encryption_rules)
+                except ClientError:
+                    encryption_enabled = False
+
+                resources.append(ResourceSummary(
+                    resource_id=bucket['Name'],
+                    resource_type='s3',
+                    name=bucket['Name'],
+                    region=bucket_region,
+                    details={
+                        'creation_date': bucket['CreationDate'].isoformat(),
+                        'region': bucket_region,
+                        'versioning': versioning_status,
+                        'encryption_enabled': encryption_enabled
+                    }
+                ))
+        except ClientError as e:
+            logger.error(f"Error listing S3 buckets: {str(e)}")
 
         return resources
 
