@@ -182,14 +182,24 @@ def get_resource_types(
     """
     logger.info(f"Getting resource types for project {project_id}")
     
-    # Use cached resources if available
+    # First try to get from cache
     cached_resources = _get_cached_resources(str(project_id))
     if cached_resources is not None:
         resource_types = sorted(list(set(r.type for r in cached_resources)))
         logger.info(f"Found resource types from cache: {resource_types}")
         return {"resource_types": resource_types}
     
-    return {"resource_types": []}
+    # If not in cache, get from database
+    resources = db.query(Resource).filter(Resource.project_id == project_id).all()
+    resource_types = sorted(list(set(r.type for r in resources)))
+    logger.info(f"Found resource types from database: {resource_types}")
+    
+    # If no types found, return default list
+    if not resource_types:
+        resource_types = ["ec2", "s3", "vpc", "load_balancer"]
+        logger.info(f"No types found, returning default list: {resource_types}")
+    
+    return {"resource_types": resource_types}
 
 @router.get("/{project_id}/resources/summary")
 def get_resource_summary(
