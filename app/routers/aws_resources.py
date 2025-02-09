@@ -28,27 +28,27 @@ def get_aws_client(credentials: AWSCredentials) -> AWSAPI:
 def save_resource(db: Session, project_id: str, resource_data: dict):
     """Save or update an AWS resource in the database"""
     existing = db.query(Resource).filter(
-        Resource.arn == resource_data["arn"],
+        Resource.resource_id == resource_data["resource_id"],
         Resource.project_id == project_id
     ).first()
 
     if existing:
         # Update existing resource
-        logger.info(f"Updating existing resource: {resource_data['arn']}")
+        logger.info(f"Updating existing resource: {resource_data['resource_id']}")
         for key, value in resource_data.items():
             if key != "id" and hasattr(existing, key):
                 setattr(existing, key, value)
         resource = existing
-        logger.info(f"Resource updated successfully: {resource.arn}")
+        logger.info(f"Resource updated successfully: {resource.resource_id}")
     else:
         # Create new resource
-        logger.info(f"Creating new resource: {resource_data['arn']}")
+        logger.info(f"Creating new resource: {resource_data['resource_id']}")
         resource = Resource(
             project_id=project_id,
             **resource_data
         )
         db.add(resource)
-        logger.info(f"New resource created successfully: {resource.arn}")
+        logger.info(f"New resource created successfully: {resource.resource_id}")
 
     return resource
 
@@ -113,10 +113,10 @@ async def discover_ec2_instances(
             resource_data = {
                 "name": next((tag['Value'] for tag in instance.get('Tags', []) if tag['Key'] == 'Name'), instance['instance_id']),
                 "type": "ec2",
-                "arn": instance_arn,
+                "resource_id": instance['instance_id'],
                 "region": credentials.region,
                 "status": instance['state'],
-                "details": json.dumps(instance)
+                "details": instance
             }
             
             # Save to database
@@ -130,11 +130,13 @@ async def discover_ec2_instances(
         # Convert to response schema
         response_resources = [
             ResourceSummary(
-                type=r.type,
+                id=str(r.id),
                 name=r.name,
-                arn=r.arn,
-                region=r.region,
-                status=r.status,
+                type=r.type,
+                resource_id=r.resource_id,
+                region=r.details.get('region', 'unknown') if r.details else 'unknown',
+                status=r.details.get('status', 'unknown') if r.details else 'unknown',
+                details=r.details,
                 created_at=r.created_at
             ) for r in saved_resources
         ]
@@ -148,10 +150,11 @@ async def discover_ec2_instances(
                 id=str(r.id),
                 name=r.name,
                 type=r.type,
-                arn=r.arn,
-                region=r.region,
-                status=r.status,
-                details=EC2InstanceDetails(**json.loads(r.details))
+                resource_id=r.resource_id,
+                region=r.details.get('region', 'unknown') if r.details else 'unknown',
+                status=r.details.get('status', 'unknown') if r.details else 'unknown',
+                details=r.details,
+                created_at=r.created_at
             ) for r in saved_resources
         ]
         
@@ -205,13 +208,11 @@ async def list_ec2_instances(
             id=r.id,
             name=r.name,
             type=r.type,
-            arn=r.arn,
-            region=r.region,
-            status=r.status,
-            details=EC2InstanceDetails(**json.loads(r.details)),
-            project_id=r.project_id,
-            created_at=r.created_at,
-            updated_at=r.updated_at
+            resource_id=r.resource_id,
+            region=r.details.get('region', 'unknown') if r.details else 'unknown',
+            status=r.details.get('status', 'unknown') if r.details else 'unknown',
+            details=r.details,
+            created_at=r.created_at
         ) for r in resources
     ]
     

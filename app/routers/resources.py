@@ -136,10 +136,10 @@ def get_resources(
             id=str(r.id),
             name=r.name,
             type=r.type,
-            arn=r.arn,
+            resource_id=r.resource_id,
             region=r.details.get('region', 'unknown') if r.details else 'unknown',
             status=r.details.get('status', 'unknown') if r.details else 'unknown',
-            details=json.loads(r.details) if r.details else None,
+            details=r.details,
             created_at=r.created_at
         ) for r in resources
     ]
