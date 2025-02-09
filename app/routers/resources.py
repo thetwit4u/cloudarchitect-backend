@@ -136,7 +136,6 @@ def get_resources(
             id=str(r.id),
             name=r.name,
             type=r.type,
-            resource_id=r.resource_id,
             region=r.details.get('region', 'unknown') if r.details else 'unknown',
             status=r.details.get('status', 'unknown') if r.details else 'unknown',
             details=r.details,
