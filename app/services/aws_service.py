@@ -1,6 +1,7 @@
 import boto3
 from botocore.exceptions import ClientError
 from ..schemas.aws import AWSCredentialsBase, ResourceSummary
+from ..models.aws_resources import ResourceType
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 import uuid
@@ -56,96 +57,81 @@ class AWSService:
             raise ValueError(error_message)
 
     def list_resources(self) -> List[ResourceSummary]:
-        """List AWS resources in the account"""
-        resources = []
-        logger.info("Starting AWS resource discovery...")
+        """List all AWS resources for the project"""
+        resources: List[ResourceSummary] = []
         
-        try:
-            # List EC2 instances
-            ec2 = self.session.client('ec2')
-            logger.info("Discovering EC2 instances...")
-            response = ec2.describe_instances()
-            
-            for reservation in response['Reservations']:
-                for instance in reservation['Instances']:
-                    logger.debug(f"Processing EC2 instance: {instance['InstanceId']}")
-                    
-                    # Get instance name from tags
-                    name = next((tag['Value'] for tag in instance.get('Tags', []) 
-                               if tag['Key'] == 'Name'), instance['InstanceId'])
-                    
-                    # Create ARN
-                    arn = f"arn:aws:ec2:{self.credentials.region}:{self.get_account_id()}:instance/{instance['InstanceId']}"
-                    
-                    # Convert datetime objects to strings for JSON serialization
-                    instance_details = {
-                        'InstanceId': instance['InstanceId'],
-                        'InstanceType': instance['InstanceType'],
-                        'State': instance['State']['Name'],
-                        'LaunchTime': instance['LaunchTime'].isoformat(),
-                        'PrivateIpAddress': instance.get('PrivateIpAddress'),
-                        'PublicIpAddress': instance.get('PublicIpAddress'),
-                        'Tags': instance.get('Tags', []),
-                        'SecurityGroups': instance.get('SecurityGroups', [])
+        # Get EC2 instances
+        ec2 = self.session.client('ec2')
+        instances = ec2.describe_instances()
+        for reservation in instances['Reservations']:
+            for instance in reservation['Instances']:
+                name = next((tag['Value'] for tag in instance.get('Tags', []) if tag['Key'] == 'Name'), instance['InstanceId'])
+                resources.append(ResourceSummary(
+                    resource_id=instance['InstanceId'],
+                    resource_type=ResourceType.EC2,
+                    name=name,
+                    region=self.credentials.region,
+                    details={
+                        'state': instance['State']['Name'],
+                        'instance_type': instance['InstanceType'],
+                        'private_ip': instance.get('PrivateIpAddress'),
+                        'public_ip': instance.get('PublicIpAddress'),
+                        'vpc_id': instance.get('VpcId'),
+                        'subnet_id': instance.get('SubnetId'),
+                        'security_groups': [sg['GroupId'] for sg in instance.get('SecurityGroups', [])]
                     }
-                    
-                    resources.append(ResourceSummary(
-                        id=str(uuid.uuid4()),
-                        name=name,
-                        type='ec2',
-                        arn=arn,
-                        region=self.credentials.region,
-                        status=instance['State']['Name'],
-                        details=instance_details,
-                        created_at=instance['LaunchTime']
-                    ))
+                ))
+
+        # Get VPCs
+        vpcs = ec2.describe_vpcs()
+        for vpc in vpcs['Vpcs']:
+            name = next((tag['Value'] for tag in vpc.get('Tags', []) if tag['Key'] == 'Name'), vpc['VpcId'])
+            resources.append(ResourceSummary(
+                resource_id=vpc['VpcId'],
+                resource_type=ResourceType.VPC,
+                name=name,
+                region=self.credentials.region,
+                details={
+                    'cidr_block': vpc['CidrBlock'],
+                    'state': vpc['State'],
+                    'is_default': vpc.get('IsDefault', False),
+                    'dhcp_options_id': vpc.get('DhcpOptionsId'),
+                    'instance_tenancy': vpc.get('InstanceTenancy')
+                }
+            ))
+
+        # Get Load Balancers and their listeners
+        elb = self.session.client('elbv2')
+        load_balancers = elb.describe_load_balancers()
+        for lb in load_balancers['LoadBalancers']:
+            # Get listeners for this load balancer
+            listeners = elb.describe_listeners(LoadBalancerArn=lb['LoadBalancerArn'])
             
-            logger.info(f"Discovered {len(resources)} EC2 instances")
-            
-            # List S3 buckets
-            s3 = self.session.client('s3')
-            logger.info("Discovering S3 buckets...")
-            buckets = s3.list_buckets()['Buckets']
-            
-            for bucket in buckets:
-                logger.debug(f"Processing S3 bucket: {bucket['Name']}")
-                try:
-                    # Get bucket location
-                    location = s3.get_bucket_location(Bucket=bucket['Name'])['LocationConstraint'] or 'us-east-1'
-                    
-                    # Only include buckets in our region
-                    if location == self.credentials.region:
-                        arn = f"arn:aws:s3:::{bucket['Name']}"
-                        
-                        # Convert datetime objects to strings for JSON serialization
-                        bucket_details = {
-                            'Name': bucket['Name'],
-                            'CreationDate': bucket['CreationDate'].isoformat(),
-                            'Location': location
+            name = lb['LoadBalancerName']
+            resources.append(ResourceSummary(
+                resource_id=lb['LoadBalancerArn'],
+                resource_type=ResourceType.LOAD_BALANCER,
+                name=name,
+                region=self.credentials.region,
+                details={
+                    'dns_name': lb['DNSName'],
+                    'scheme': lb.get('Scheme'),
+                    'vpc_id': lb.get('VpcId'),
+                    'type': lb.get('Type'),
+                    'state': lb.get('State', {}).get('Code'),
+                    'availability_zones': [az.get('ZoneName') for az in lb.get('AvailabilityZones', [])],
+                    'listeners': [
+                        {
+                            'protocol': listener['Protocol'],
+                            'port': listener['Port'],
+                            'arn': listener['ListenerArn']
                         }
-                        
-                        resources.append(ResourceSummary(
-                            id=str(uuid.uuid4()),
-                            name=bucket['Name'],
-                            type='s3',
-                            arn=arn,
-                            region=location,
-                            status='available',
-                            details=bucket_details,
-                            created_at=bucket['CreationDate']
-                        ))
-                except ClientError as e:
-                    logger.warning(f"Error getting location for bucket {bucket['Name']}: {str(e)}")
-                    continue
-            
-            logger.info(f"Discovered {len(resources) - len(response['Reservations'])} S3 buckets")
-            
-            return resources
-            
-        except ClientError as e:
-            error_message = f"Error discovering AWS resources: {str(e)}"
-            logger.error(error_message, exc_info=True)
-            raise ValueError(error_message)
+                        for listener in listeners.get('Listeners', [])
+                    ]
+                }
+            ))
+
+        return resources
 
     def get_resource_details(self, resource_type: str, resource_id: str) -> Dict[str, Any]:
         """Get detailed information about a specific AWS resource"""

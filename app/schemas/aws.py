@@ -1,6 +1,7 @@
-from pydantic import BaseModel, UUID4
+from pydantic import BaseModel, UUID4, ConfigDict
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
+from ..models.aws_resources import ResourceType
 
 class AWSCredentialsBase(BaseModel):
     aws_access_key_id: str
@@ -16,11 +17,10 @@ class AWSCredentialsResponse(AWSCredentialsBase):
     created_at: datetime
     updated_at: Optional[datetime] = None
 
-    class Config:
-        from_attributes = True
-        json_encoders = {
-            UUID4: lambda x: str(x)
-        }
+    model_config = ConfigDict(
+        from_attributes=True,
+        json_encoders={UUID4: str}
+    )
 
 class StoredAWSCredentials(AWSCredentialsBase):
     id: UUID4
@@ -28,24 +28,23 @@ class StoredAWSCredentials(AWSCredentialsBase):
     created_at: datetime
     updated_at: Optional[datetime] = None
 
-    class Config:
-        from_attributes = True
-        json_encoders = {
-            UUID4: lambda x: str(x)
-        }
+    model_config = ConfigDict(
+        from_attributes=True,
+        json_encoders={UUID4: str}
+    )
 
 class ResourceSummary(BaseModel):
-    id: str
-    type: str
+    resource_id: str
+    resource_type: ResourceType
     name: str
-    arn: str
     region: str
-    status: str
     details: Optional[Dict[str, Any]] = None
-    created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(
+        from_attributes=True,
+        arbitrary_types_allowed=True,
+        use_enum_values=True
+    )
 
 class ResourceDetails(ResourceSummary):
     id: str
@@ -55,9 +54,15 @@ class ResourceDetails(ResourceSummary):
     tags: Optional[Dict[str, str]] = None
     vpc_id: Optional[str] = None
     subnet_id: Optional[str] = None
-    security_groups: Optional[list[str]] = None
+    security_groups: Optional[List[str]] = None
     public_ip: Optional[str] = None
     private_ip: Optional[str] = None
+
+    model_config = ConfigDict(
+        from_attributes=True,
+        arbitrary_types_allowed=True,
+        use_enum_values=True
+    )
 
 class ResourceMetrics(BaseModel):
     cpu_utilization: Optional[float] = None

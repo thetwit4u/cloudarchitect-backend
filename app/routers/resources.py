@@ -49,59 +49,46 @@ def _update_cache(project_id: str, resources: List[ResourceSummary], db: Session
         ).all()
         logger.info(f"Found {len(existing_resources)} existing resources in database")
         
-        # Create a map of ARNs to existing resources for faster lookup
-        existing_map = {r.arn: r for r in existing_resources}
+        # Create a map of resource IDs to existing resources for faster lookup
+        existing_map = {r.resource_id: r for r in existing_resources}
         
-        # Keep track of processed ARNs
-        processed_arns = set()
+        # Keep track of processed resource IDs
+        processed_ids = set()
         
         # Update database
         for resource in resources:
-            logger.debug(f"Processing resource: {resource.arn}")
-            processed_arns.add(resource.arn)
+            logger.debug(f"Processing resource: {resource.resource_id}")
+            processed_ids.add(resource.resource_id)
             
             resource_data = {
                 "name": resource.name,
-                "type": resource.type,
-                "arn": resource.arn,
+                "type": resource.resource_type.value,
+                "resource_id": resource.resource_id,
                 "region": resource.region,
-                "status": resource.status,
                 "details": json.dumps(resource.details) if resource.details else None,
-                "created_at": resource.created_at
+                "project_id": UUID(project_id)
             }
             
-            if resource.arn in existing_map:
-                existing = existing_map[resource.arn]
-                logger.debug(f"Updating existing resource in database: {resource.arn}")
+            if resource.resource_id in existing_map:
+                # Update existing resource
+                existing_resource = existing_map[resource.resource_id]
                 for key, value in resource_data.items():
-                    setattr(existing, key, value)
+                    setattr(existing_resource, key, value)
             else:
-                logger.debug(f"Creating new resource in database: {resource.arn}")
-                new_resource = Resource(
-                    id=uuid4(),
-                    project_id=UUID(project_id),
-                    **resource_data
-                )
+                # Create new resource
+                new_resource = Resource(**resource_data)
                 db.add(new_resource)
         
         # Delete resources that no longer exist
-        for existing in existing_resources:
-            if existing.arn not in processed_arns:
-                logger.info(f"Deleting removed resource from database: {existing.arn}")
-                db.delete(existing)
+        for resource in existing_resources:
+            if resource.resource_id not in processed_ids:
+                db.delete(resource)
         
         db.commit()
-        logger.info(f"Successfully persisted {len(resources)} resources to database")
-        
-        # Verify the changes
-        final_count = db.query(Resource).filter(
-            Resource.project_id == UUID(project_id)
-        ).count()
-        logger.info(f"Final resource count in database: {final_count}")
         
     except Exception as e:
+        logger.error(f"Error persisting resources to database: {str(e)}")
         db.rollback()
-        logger.error(f"Error persisting resources to database: {str(e)}", exc_info=True)
         raise
 
 @router.get("/{project_id}/resources", response_model=List[ResourceSummary])
@@ -269,27 +256,22 @@ def get_resource_summary(
     # Calculate summaries
     for resource in resources:
         # Type summary
-        if resource.type not in type_summary:
-            type_summary[resource.type] = 0
-        type_summary[resource.type] += 1
+        resource_type = resource.type
+        type_summary[resource_type] = type_summary.get(resource_type, 0) + 1
         
-        # Status summary
-        if resource.status not in status_summary:
-            status_summary[resource.status] = 0
-        status_summary[resource.status] += 1
+        # Status summary (from details)
+        status = resource.details.get('status', 'unknown') if resource.details else 'unknown'
+        status_summary[status] = status_summary.get(status, 0) + 1
         
-        # Region summary
-        if resource.region not in region_summary:
-            region_summary[resource.region] = 0
-        region_summary[resource.region] += 1
-    
-    logger.info(f"Generated summary - Types: {len(type_summary)}, Statuses: {len(status_summary)}, Regions: {len(region_summary)}")
+        # Region summary (from details)
+        region = resource.details.get('region', 'unknown') if resource.details else 'unknown'
+        region_summary[region] = region_summary.get(region, 0) + 1
     
     return {
-        "total": len(resources),
-        "by_type": type_summary,
-        "by_status": status_summary,
-        "by_region": region_summary
+        "type_summary": type_summary,
+        "status_summary": status_summary,
+        "region_summary": region_summary,
+        "total_resources": len(resources)
     }
 
 @router.get("/{project_id}/resources/discover/status")
