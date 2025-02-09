@@ -34,7 +34,8 @@ class StoredAWSCredentials(AWSCredentialsBase):
     )
 
 class ResourceSummary(BaseModel):
-    id: str
+    id: UUID4
+    resource_id: str
     name: str
     type: str
     region: str
@@ -44,11 +45,12 @@ class ResourceSummary(BaseModel):
 
     model_config = ConfigDict(
         from_attributes=True,
-        arbitrary_types_allowed=True
+        arbitrary_types_allowed=True,
+        json_encoders={UUID4: str}
     )
 
 class ResourceDetails(ResourceSummary):
-    id: str
+    id: UUID4
     project_id: str
     resource_metadata: Optional[Dict[str, Any]] = None
     updated_at: Optional[datetime] = None

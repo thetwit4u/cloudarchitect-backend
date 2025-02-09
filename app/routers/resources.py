@@ -63,7 +63,8 @@ def _update_cache(project_id: str, resources: List[ResourceSummary], db: Session
             
             resource_data = {
                 "name": resource.name,
-                "type": resource.resource_type,
+                "type": resource.type,
+                "id": resource.id,
                 "resource_id": resource.resource_id,
                 "project_id": project_uuid,
                 "details": resource.details
@@ -92,59 +93,33 @@ def _update_cache(project_id: str, resources: List[ResourceSummary], db: Session
         raise
 
 @router.get("/{project_id}/resources", response_model=List[ResourceSummary])
-def get_resources(
-    project_id: UUID,
-    resource_type: Optional[str] = None,
-    region: Optional[str] = None,
-    current_user: UserResponse = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """
-    Get all resources for a project with optional filtering
-    """
-    logger.info(f"Getting resources for project {project_id}")
-    
-    # Check project access
-    project = db.query(Project).filter(
-        Project.id == project_id,
-        Project.user_id == current_user.id
-    ).first()
-    
-    if not project:
-        logger.warning(f"Project not found: {project_id}")
+def get_resources(project_id: str, db: Session = Depends(get_db)) -> List[ResourceSummary]:
+    """Get all resources for a project"""
+    try:
+        project_uuid = UUID(project_id)
+        resources = db.query(Resource).filter(
+            Resource.project_id == project_uuid
+        ).all()
+        
+        # Convert database models to ResourceSummary schema
+        return [
+            ResourceSummary(
+                id=r.id,  
+                resource_id=r.resource_id,  
+                name=r.name,
+                type=r.type,
+                region=r.details.get('region', 'unknown'),
+                status=r.details.get('status', 'unknown'),
+                details=r.details,
+                created_at=r.created_at
+            ) for r in resources
+        ]
+    except Exception as e:
+        logger.error(f"Error getting resources: {str(e)}")
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Project not found"
+            status_code=500,
+            detail=f"Error getting resources: {str(e)}"
         )
-    
-    # Get from database
-    query = db.query(Resource).filter(Resource.project_id == project_id)
-    
-    if resource_type:
-        logger.debug(f"Filtering by resource type: {resource_type}")
-        query = query.filter(Resource.type == resource_type)
-    if region:
-        logger.debug(f"Filtering by region: {region}")
-        query = query.filter(Resource.details.get('region', 'unknown') == region)
-    
-    resources = query.all()
-    logger.info(f"Found {len(resources)} resources in database")
-    
-    # Convert to ResourceSummary objects
-    summaries = [
-        ResourceSummary(
-            id=str(r.id),
-            name=r.name,
-            type=r.type,
-            region=r.details.get('region', 'unknown') if r.details else 'unknown',
-            status=r.details.get('status', 'unknown') if r.details else 'unknown',
-            details=r.details,
-            created_at=r.created_at
-        ) for r in resources
-    ]
-    
-    logger.info(f"Returning {len(summaries)} resources")
-    return summaries
 
 @router.post("/{project_id}/resources/discover")
 def start_resource_discovery(

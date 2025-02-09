@@ -4,6 +4,7 @@ from ..schemas.aws import AWSCredentialsBase, ResourceSummary
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 import uuid
+from uuid import uuid4
 import logging
 from sqlalchemy.orm import Session
 from ..models import AWSCredentials, Project
@@ -63,12 +64,16 @@ class AWSService:
             for instance in reservation['Instances']:
                 name = next((tag['Value'] for tag in instance.get('Tags', []) if tag['Key'] == 'Name'), instance['InstanceId'])
                 resources.append(ResourceSummary(
+                    id=uuid4(),
                     resource_id=instance['InstanceId'],
-                    resource_type='ec2',
+                    type='ec2',
                     name=name,
                     region=self.credentials.region,
+                    status=instance['State']['Name'],
+                    created_at=datetime.now(),
                     details={
-                        'state': instance['State']['Name'],
+                        'status': instance['State']['Name'],
+                        'region': self.credentials.region,
                         'instance_type': instance['InstanceType'],
                         'private_ip': instance.get('PrivateIpAddress'),
                         'public_ip': instance.get('PublicIpAddress'),
@@ -83,11 +88,15 @@ class AWSService:
         for vpc in vpcs['Vpcs']:
             name = next((tag['Value'] for tag in vpc.get('Tags', []) if tag['Key'] == 'Name'), vpc['VpcId'])
             resources.append(ResourceSummary(
+                id=uuid4(),
                 resource_id=vpc['VpcId'],
-                resource_type='vpc',
+                type='vpc',
                 name=name,
                 region=self.credentials.region,
+                status=vpc['State'],
+                created_at=datetime.now(),
                 details={
+                    'status': vpc['State'],
                     'cidr_block': vpc['CidrBlock'],
                     'state': vpc['State'],
                     'is_default': vpc.get('IsDefault', False),
@@ -105,16 +114,19 @@ class AWSService:
             
             name = lb['LoadBalancerName']
             resources.append(ResourceSummary(
-                resource_id=lb['LoadBalancerArn'],
-                resource_type='load_balancer',
+                id=uuid4(),
+                resource_id=lb['LoadBalancerArn'].split('/')[-1],  # Get the last part of the ARN as resource_id
+                type='load_balancer',
                 name=name,
                 region=self.credentials.region,
+                status=lb.get('State', {}).get('Code', 'unknown'),
+                created_at=datetime.now(),
                 details={
+                    'status': lb.get('State', {}).get('Code', 'unknown'),
                     'dns_name': lb['DNSName'],
                     'scheme': lb.get('Scheme'),
                     'vpc_id': lb.get('VpcId'),
                     'type': lb.get('Type'),
-                    'state': lb.get('State', {}).get('Code'),
                     'availability_zones': [az.get('ZoneName') for az in lb.get('AvailabilityZones', [])],
                     'listeners': [
                         {
@@ -162,11 +174,15 @@ class AWSService:
                     encryption_enabled = False
 
                 resources.append(ResourceSummary(
+                    id=uuid4(),
                     resource_id=bucket['Name'],
-                    resource_type='s3',
+                    type='s3',
                     name=bucket['Name'],
                     region=bucket_region,
+                    status='available',  # S3 buckets are always available if we can list them
+                    created_at=bucket['CreationDate'],
                     details={
+                        'status': 'available',
                         'creation_date': bucket['CreationDate'].isoformat(),
                         'region': bucket_region,
                         'versioning': versioning_status,
