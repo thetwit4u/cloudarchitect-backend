@@ -351,14 +351,16 @@ class AWSService:
                         logger.warning(f"No ARN found in domain info, using credentials region: {self.credentials.region}")
                         region = self.credentials.region
                     
-                    # Get status from DomainProcessingStatus
-                    domain_status = domain_info.get('DomainProcessingStatus', '').lower()
-                    if domain_status == 'active' and cluster_health != 'unknown':
-                        status = cluster_health  # Use cluster health if domain is active
+                    # Get status from DomainProcessingStatus and domain status
+                    domain_status = domain_info.get('DomainProcessingStatus', '').lower()  # Convert to lowercase
+                    domain_active = domain_info.get('Processing', False) == False and domain_info.get('Deleted', False) == False
+                    
+                    if domain_active and cluster_health != 'unknown':
+                        status = cluster_health.lower()  # Convert cluster health to lowercase
                     elif domain_status:
-                        status = domain_status  # Use domain status if available
+                        status = domain_status  # Already lowercase
                     else:
-                        status = 'unknown'  # Fallback if no status is available
+                        status = 'unknown'  # Already lowercase
                     
                     logger.info(f"Final status: {status}")
                     
@@ -388,6 +390,8 @@ class AWSService:
                         type='opensearch',
                         name=domain_name,
                         created_at=created_at,
+                        region=region,
+                        status=status,  
                         details={
                             'endpoint': domain_info.get('Endpoints', {}).get('vpc'),
                             'engine_version': domain_info.get('EngineVersion'),
