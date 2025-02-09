@@ -221,6 +221,7 @@ class AWSService:
                 # Get node groups for this cluster
                 nodegroups = eks.list_nodegroups(clusterName=cluster_name)
                 nodegroup_details = []
+                total_managed_nodes = 0
                 
                 for nodegroup_name in nodegroups.get('nodegroups', []):
                     try:
@@ -228,6 +229,9 @@ class AWSService:
                             clusterName=cluster_name,
                             nodegroupName=nodegroup_name
                         )['nodegroup']
+                        
+                        desired_size = nodegroup.get('scalingConfig', {}).get('desiredSize', 0)
+                        total_managed_nodes += desired_size
                         
                         nodegroup_details.append({
                             'name': nodegroup_name,
@@ -242,6 +246,41 @@ class AWSService:
                         })
                     except ClientError as e:
                         logger.warning(f"Could not get details for nodegroup {nodegroup_name}: {str(e)}")
+
+                # Get directly attached nodes
+                try:
+                    # Get cluster OIDC issuer without https:// prefix
+                    oidc_issuer = cluster['identity']['oidc']['issuer'].replace('https://', '')
+                    
+                    # List nodes using EC2 describe_instances with cluster tag
+                    ec2 = self.session.client('ec2')
+                    response = ec2.describe_instances(
+                        Filters=[
+                            {
+                                'Name': 'tag:kubernetes.io/cluster/' + cluster_name,
+                                'Values': ['owned']
+                            }
+                        ]
+                    )
+                    
+                    direct_nodes = []
+                    for reservation in response['Reservations']:
+                        for instance in reservation['Instances']:
+                            # Check if node is not part of a managed node group
+                            if not any(tag['Key'].startswith('eks:nodegroup-name') for tag in instance.get('Tags', [])):
+                                direct_nodes.append({
+                                    'instance_id': instance['InstanceId'],
+                                    'instance_type': instance['InstanceType'],
+                                    'state': instance['State']['Name'],
+                                    'private_ip': instance.get('PrivateIpAddress'),
+                                    'public_ip': instance.get('PublicIpAddress')
+                                })
+                    
+                    total_direct_nodes = len(direct_nodes)
+                except ClientError as e:
+                    logger.warning(f"Could not get directly attached nodes for cluster {cluster_name}: {str(e)}")
+                    direct_nodes = []
+                    total_direct_nodes = 0
                 
                 # Add cluster as a resource
                 resources.append(ResourceSummary(
@@ -267,6 +306,12 @@ class AWSService:
                         },
                         'logging': cluster.get('logging', {}).get('clusterLogging', []),
                         'nodegroups': nodegroup_details,
+                        'direct_nodes': direct_nodes,
+                        'nodes_summary': {
+                            'managed_nodes': total_managed_nodes,
+                            'direct_nodes': total_direct_nodes,
+                            'total_nodes': total_managed_nodes + total_direct_nodes
+                        },
                         'tags': cluster.get('tags', {})
                     }
                 ))
