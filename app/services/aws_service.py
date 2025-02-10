@@ -477,7 +477,7 @@ class AWSService:
                     id=str(uuid4()),
                     resource_id=sg['GroupId'],
                     name=sg.get('GroupName', ''),
-                    type='SecurityGroup',
+                    type='securitygroup',
                     created_at=datetime.now(timezone.utc),
                     details={
                         'description': sg.get('Description', ''),
