@@ -11,6 +11,7 @@ from ..models import AWSCredentials, Project, Resource
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import threading
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -782,14 +783,28 @@ class AWSService:
                             security_groups.append({
                                 'id': sg['GroupId'],
                                 'name': sg['GroupName'],
-                                'description': sg.get('Description', ''),
-                                'vpc_id': sg.get('VpcId', ''),
+                                'description': sg['Description'],
+                                'vpc_id': sg['VpcId'],
                                 'inbound_rules': [{
-                                    'protocol': rule.get('IpProtocol', 'all'),
-                                    'from_port': rule.get('FromPort', -1),
-                                    'to_port': rule.get('ToPort', -1),
-                                    'sources': [ip_range.get('CidrIp') for ip_range in rule.get('IpRanges', [])]
-                                } for rule in sg.get('IpPermissions', [])]
+                                    'protocol': rule['IpProtocol'],
+                                    'from_port': rule.get('FromPort'),
+                                    'to_port': rule.get('ToPort'),
+                                    'sources': [
+                                        ip_range['CidrIp'] for ip_range in rule.get('IpRanges', [])
+                                    ] + [
+                                        group['GroupId'] for group in rule.get('UserIdGroupPairs', [])
+                                    ]
+                                } for rule in sg['IpPermissions']],
+                                'outbound_rules': [{
+                                    'protocol': rule['IpProtocol'],
+                                    'from_port': rule.get('FromPort'),
+                                    'to_port': rule.get('ToPort'),
+                                    'destinations': [
+                                        ip_range['CidrIp'] for ip_range in rule.get('IpRanges', [])
+                                    ] + [
+                                        group['GroupId'] for group in rule.get('UserIdGroupPairs', [])
+                                    ]
+                                } for rule in sg['IpPermissionsEgress']]
                             })
                 except ClientError as e:
                     logger.warning(f"Could not get security group details for cluster {cluster_name}: {str(e)}")
@@ -969,6 +984,63 @@ class AWSService:
                         for type, count in instance_counts.items()
                     ]
                     
+                    # Get encryption settings
+                    encryption_settings = {
+                        'at_rest': {
+                            'enabled': domain_info.get('EncryptionAtRestOptions', {}).get('Enabled', False),
+                            'kms_key_id': domain_info.get('EncryptionAtRestOptions', {}).get('KmsKeyId')
+                        },
+                        'node_to_node': {
+                            'enabled': domain_info.get('NodeToNodeEncryptionOptions', {}).get('Enabled', False)
+                        },
+                        'cognito': {
+                            'enabled': domain_info.get('CognitoOptions', {}).get('Enabled', False),
+                            'user_pool_id': domain_info.get('CognitoOptions', {}).get('UserPoolId'),
+                            'identity_pool_id': domain_info.get('CognitoOptions', {}).get('IdentityPoolId')
+                        }
+                    }
+
+                    # Get snapshot settings
+                    try:
+                        snapshot_options = opensearch.describe_domain_auto_tunes(DomainName=domain_name)
+                        auto_tunes = snapshot_options.get('AutoTunes', [])
+                        snapshot_settings = {
+                            'automated_snapshot_start_hour': domain_info.get('SnapshotOptions', {}).get('AutomatedSnapshotStartHour'),
+                            'auto_tune_options': {
+                                'state': domain_info.get('AutoTuneOptions', {}).get('State', 'DISABLED'),
+                                'use_off_peak_window': domain_info.get('AutoTuneOptions', {}).get('UseOffPeakWindow', False),
+                                'maintenance_schedules': []
+                            }
+                        }
+                        
+                        # Only process maintenance schedules if auto-tunes exist
+                        if auto_tunes:
+                            auto_tune = auto_tunes[0]
+                            snapshot_settings['auto_tune_options']['maintenance_schedules'] = [
+                                {
+                                    'start_time': schedule.get('StartTime'),
+                                    'duration': schedule.get('Duration'),
+                                    'cron_expression': schedule.get('CronExpressionForRecurrence')
+                                }
+                                for schedule in auto_tune.get('MaintenanceSchedules', [])
+                            ]
+                    except ClientError as e:
+                        logger.warning(f"Could not get snapshot settings: {str(e)}")
+                        snapshot_settings = {
+                            'automated_snapshot_start_hour': domain_info.get('SnapshotOptions', {}).get('AutomatedSnapshotStartHour'),
+                            'auto_tune_options': {
+                                'state': domain_info.get('AutoTuneOptions', {}).get('State', 'DISABLED'),
+                                'use_off_peak_window': domain_info.get('AutoTuneOptions', {}).get('UseOffPeakWindow', False),
+                                'maintenance_schedules': []
+                            }
+                        }
+                    
+                    # Get access policies
+                    try:
+                        access_policies = json.loads(domain_info.get('AccessPolicies', '{}'))
+                    except json.JSONDecodeError:
+                        access_policies = {}
+
                     # Create resource summary
                     resource_summary = ResourceSummary(
                         id=uuid4(),
@@ -977,7 +1049,7 @@ class AWSService:
                         name=domain_name,
                         created_at=created_at,
                         region=region,
-                        status=status,  
+                        status=status,
                         details={
                             'endpoint': domain_info.get('Endpoints', {}).get('vpc'),
                             'engine_version': domain_info.get('EngineVersion'),
@@ -987,12 +1059,14 @@ class AWSService:
                             'vpc_id': domain_info.get('VPCOptions', {}).get('VPCId'),
                             'zone_awareness': domain_info.get('ClusterConfig', {}).get('ZoneAwarenessEnabled', False),
                             'dedicated_master': domain_info.get('ClusterConfig', {}).get('DedicatedMasterEnabled', False),
-                            'encryption_at_rest': domain_info.get('EncryptionAtRestOptions', {}).get('Enabled', False),
-                            'node_to_node_encryption': domain_info.get('NodeToNodeEncryptionOptions', {}).get('Enabled', False),
-                            'cluster_health': cluster_health,
-                            'tags': domain_info.get('Tags', {}),
-                            'region': region,
-                            'status': status
+                            'encryption': encryption_settings,
+                            'snapshot': snapshot_settings,
+                            'access_policies': access_policies,
+                            'advanced_security_options': {
+                                'enabled': domain_info.get('AdvancedSecurityOptions', {}).get('Enabled', False),
+                                'internal_user_database': domain_info.get('AdvancedSecurityOptions', {}).get('InternalUserDatabaseEnabled', False),
+                                'saml_options': domain_info.get('AdvancedSecurityOptions', {}).get('SAMLOptions', {})
+                            }
                         }
                     )
                     
