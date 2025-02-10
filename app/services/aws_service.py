@@ -189,26 +189,135 @@ class AWSService:
                 ))
 
         # Get VPCs
-        vpcs = ec2.describe_vpcs()
-        for vpc in vpcs['Vpcs']:
-            name = next((tag['Value'] for tag in vpc.get('Tags', []) if tag['Key'] == 'Name'), vpc['VpcId'])
-            resources.append(ResourceSummary(
-                id=uuid4(),
-                resource_id=vpc['VpcId'],
-                type='vpc',
-                name=name,
-                region=self.credentials.region,
-                status=vpc['State'],
-                created_at=datetime.now(),
-                details={
-                    'status': vpc['State'],
-                    'cidr_block': vpc['CidrBlock'],
-                    'state': vpc['State'],
-                    'is_default': vpc.get('IsDefault', False),
-                    'dhcp_options_id': vpc.get('DhcpOptionsId'),
-                    'instance_tenancy': vpc.get('InstanceTenancy')
-                }
-            ))
+        ec2 = self.session.client('ec2')
+        try:
+            # Get VPCs with their basic information
+            vpcs = ec2.describe_vpcs()
+            for vpc in vpcs['Vpcs']:
+                vpc_id = vpc['VpcId']
+                name = next((tag['Value'] for tag in vpc.get('Tags', []) if tag['Key'] == 'Name'), vpc_id)
+
+                # Get subnets for this VPC
+                subnets = []
+                try:
+                    vpc_subnets = ec2.describe_subnets(Filters=[{'Name': 'vpc-id', 'Values': [vpc_id]}])
+                    for subnet in vpc_subnets['Subnets']:
+                        subnet_details = {
+                            'id': subnet['SubnetId'],
+                            'cidr_block': subnet['CidrBlock'],
+                            'availability_zone': subnet['AvailabilityZone'],
+                            'state': subnet['State'],
+                            'available_ip_count': subnet['AvailableIpAddressCount'],
+                            'default_for_az': subnet.get('DefaultForAz', False),
+                            'map_public_ip': subnet.get('MapPublicIpOnLaunch', False)
+                        }
+                        # Get route table associations
+                        try:
+                            route_tables = ec2.describe_route_tables(
+                                Filters=[{'Name': 'association.subnet-id', 'Values': [subnet['SubnetId']]}]
+                            )
+                            if route_tables['RouteTables']:
+                                routes = []
+                                for rt in route_tables['RouteTables']:
+                                    for route in rt['Routes']:
+                                        route_info = {
+                                            'destination': route.get('DestinationCidrBlock', 'unknown'),
+                                            'target': None
+                                        }
+                                        # Determine route target
+                                        if 'GatewayId' in route:
+                                            route_info['target'] = {'type': 'gateway', 'id': route['GatewayId']}
+                                        elif 'NatGatewayId' in route:
+                                            route_info['target'] = {'type': 'nat', 'id': route['NatGatewayId']}
+                                        elif 'VpcPeeringConnectionId' in route:
+                                            route_info['target'] = {'type': 'peering', 'id': route['VpcPeeringConnectionId']}
+                                        routes.append(route_info)
+                                subnet_details['routes'] = routes
+                        except ClientError as e:
+                            logger.warning(f"Error getting route tables for subnet {subnet['SubnetId']}: {str(e)}")
+                        subnets.append(subnet_details)
+                except ClientError as e:
+                    logger.warning(f"Error getting subnets for VPC {vpc_id}: {str(e)}")
+
+                # Get Internet Gateways
+                internet_gateways = []
+                try:
+                    igws = ec2.describe_internet_gateways(
+                        Filters=[{'Name': 'attachment.vpc-id', 'Values': [vpc_id]}]
+                    )
+                    for igw in igws['InternetGateways']:
+                        internet_gateways.append({
+                            'id': igw['InternetGatewayId'],
+                            'state': next((attachment['State'] for attachment in igw['Attachments'] 
+                                         if attachment['VpcId'] == vpc_id), 'unknown')
+                        })
+                except ClientError as e:
+                    logger.warning(f"Error getting internet gateways for VPC {vpc_id}: {str(e)}")
+
+                # Get NAT Gateways
+                nat_gateways = []
+                try:
+                    nats = ec2.describe_nat_gateways(
+                        Filters=[{'Name': 'vpc-id', 'Values': [vpc_id]}]
+                    )
+                    for nat in nats['NatGateways']:
+                        nat_gateways.append({
+                            'id': nat['NatGatewayId'],
+                            'subnet_id': nat['SubnetId'],
+                            'state': nat['State'],
+                            'public_ip': nat.get('PublicIp'),
+                            'private_ip': nat.get('PrivateIp'),
+                            'elastic_ip_id': next((addr['AllocationId'] for addr in nat.get('NatGatewayAddresses', [])), None)
+                        })
+                except ClientError as e:
+                    logger.warning(f"Error getting NAT gateways for VPC {vpc_id}: {str(e)}")
+
+                # Get Network Interfaces
+                network_interfaces = []
+                try:
+                    enis = ec2.describe_network_interfaces(
+                        Filters=[{'Name': 'vpc-id', 'Values': [vpc_id]}]
+                    )
+                    for eni in enis['NetworkInterfaces']:
+                        network_interfaces.append({
+                            'id': eni['NetworkInterfaceId'],
+                            'subnet_id': eni.get('SubnetId'),
+                            'private_ip': eni.get('PrivateIpAddress'),
+                            'public_ip': eni.get('Association', {}).get('PublicIp'),
+                            'status': eni['Status'],
+                            'security_groups': [sg['GroupId'] for sg in eni.get('Groups', [])],
+                            'attachment': {
+                                'instance_id': eni.get('Attachment', {}).get('InstanceId'),
+                                'status': eni.get('Attachment', {}).get('Status')
+                            } if eni.get('Attachment') else None
+                        })
+                except ClientError as e:
+                    logger.warning(f"Error getting network interfaces for VPC {vpc_id}: {str(e)}")
+
+                resources.append(ResourceSummary(
+                    id=uuid4(),
+                    resource_id=vpc_id,
+                    type='vpc',
+                    name=name,
+                    region=self.credentials.region,
+                    status=vpc['State'],
+                    created_at=datetime.now(),
+                    details={
+                        'status': vpc['State'],
+                        'cidr_block': vpc['CidrBlock'],
+                        'state': vpc['State'],
+                        'is_default': vpc.get('IsDefault', False),
+                        'dhcp_options_id': vpc.get('DhcpOptionsId'),
+                        'instance_tenancy': vpc.get('InstanceTenancy'),
+                        'subnets': subnets,
+                        'internet_gateways': internet_gateways,
+                        'nat_gateways': nat_gateways,
+                        'network_interfaces': network_interfaces,
+                        'tags': {tag['Key']: tag['Value'] for tag in vpc.get('Tags', [])}
+                    }
+                ))
+        except ClientError as e:
+            logger.error(f"Error describing VPCs: {str(e)}")
 
         # Get Load Balancers and their listeners
         elb = self.session.client('elbv2')
