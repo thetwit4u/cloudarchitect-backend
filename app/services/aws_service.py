@@ -132,7 +132,31 @@ class AWSService:
         instances = ec2.describe_instances()
         for reservation in instances['Reservations']:
             for instance in reservation['Instances']:
+                # Get instance name from tags
                 name = next((tag['Value'] for tag in instance.get('Tags', []) if tag['Key'] == 'Name'), instance['InstanceId'])
+                
+                # Get IAM instance profile if it exists
+                instance_profile = None
+                if 'IamInstanceProfile' in instance:
+                    instance_profile = instance['IamInstanceProfile'].get('Arn')
+
+                # Get network interfaces
+                network_interfaces = []
+                for eni in instance.get('NetworkInterfaces', []):
+                    network_interfaces.append({
+                        'id': eni['NetworkInterfaceId'],
+                        'subnet_id': eni.get('SubnetId'),
+                        'vpc_id': eni.get('VpcId'),
+                        'private_ip': eni.get('PrivateIpAddress'),
+                        'private_dns': eni.get('PrivateDnsName'),
+                        'public_ip': eni.get('Association', {}).get('PublicIp'),
+                        'public_dns': eni.get('Association', {}).get('PublicDnsName'),
+                        'security_groups': [sg['GroupId'] for sg in eni.get('Groups', [])]
+                    })
+
+                # Get all tags
+                tags = {tag['Key']: tag['Value'] for tag in instance.get('Tags', [])}
+
                 resources.append(ResourceSummary(
                     id=uuid4(),
                     resource_id=instance['InstanceId'],
@@ -140,16 +164,27 @@ class AWSService:
                     name=name,
                     region=self.credentials.region,
                     status=instance['State']['Name'],
-                    created_at=datetime.now(),
+                    created_at=instance['LaunchTime'],
                     details={
                         'status': instance['State']['Name'],
-                        'region': self.credentials.region,
                         'instance_type': instance['InstanceType'],
-                        'private_ip': instance.get('PrivateIpAddress'),
-                        'public_ip': instance.get('PublicIpAddress'),
+                        'ami_id': instance['ImageId'],
+                        'platform': instance.get('Platform'),
+                        'architecture': instance.get('Architecture'),
                         'vpc_id': instance.get('VpcId'),
                         'subnet_id': instance.get('SubnetId'),
-                        'security_groups': [sg['GroupId'] for sg in instance.get('SecurityGroups', [])]
+                        'availability_zone': instance.get('Placement', {}).get('AvailabilityZone'),
+                        'private_ip': instance.get('PrivateIpAddress'),
+                        'public_ip': instance.get('PublicIpAddress'),
+                        'private_dns': instance.get('PrivateDnsName'),
+                        'public_dns': instance.get('PublicDnsName'),
+                        'security_groups': [sg['GroupId'] for sg in instance.get('SecurityGroups', [])],
+                        'iam_instance_profile': instance_profile,
+                        'network_interfaces': network_interfaces,
+                        'tags': tags,
+                        'ebs_optimized': instance.get('EbsOptimized', False),
+                        'metadata_options': instance.get('MetadataOptions', {}),
+                        'monitoring': instance.get('Monitoring', {}).get('State')
                     }
                 ))
 
