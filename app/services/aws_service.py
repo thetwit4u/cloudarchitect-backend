@@ -321,36 +321,154 @@ class AWSService:
 
         # Get Load Balancers and their listeners
         elb = self.session.client('elbv2')
-        load_balancers = elb.describe_load_balancers()
-        for lb in load_balancers['LoadBalancers']:
-            # Get listeners for this load balancer
-            listeners = elb.describe_listeners(LoadBalancerArn=lb['LoadBalancerArn'])
-            
-            name = lb['LoadBalancerName']
-            resources.append(ResourceSummary(
-                id=uuid4(),
-                resource_id=lb['LoadBalancerArn'].split('/')[-1],  # Get the last part of the ARN as resource_id
-                type='load_balancer',
-                name=name,
-                region=self.credentials.region,
-                status=lb.get('State', {}).get('Code', 'unknown'),
-                created_at=datetime.now(timezone.utc),
-                details={
-                    'status': lb.get('State', {}).get('Code', 'unknown'),
-                    'dns_name': lb['DNSName'],
-                    'scheme': lb.get('Scheme'),
-                    'vpc_id': lb.get('VpcId'),
-                    'type': lb.get('Type'),
-                    'availability_zones': [az.get('ZoneName') for az in lb.get('AvailabilityZones', [])],
-                    'listeners': [
-                        {
+        try:
+            lbs = elb.describe_load_balancers()
+            for lb in lbs['LoadBalancers']:
+                # Get load balancer name
+                name = next((tag['Value'] for tag in elb.describe_tags(
+                    ResourceArns=[lb['LoadBalancerArn']])['TagDescriptions'][0]['Tags'] 
+                    if tag['Key'] == 'Name'), lb['LoadBalancerName'])
+                
+                # Get listeners with certificates
+                listeners = []
+                try:
+                    lb_listeners = elb.describe_listeners(LoadBalancerArn=lb['LoadBalancerArn'])
+                    for listener in lb_listeners['Listeners']:
+                        listener_info = {
+                            'port': listener['Port'],
                             'protocol': listener['Protocol'],
-                            'port': listener['Port']
+                            'ssl_policy': listener.get('SslPolicy'),
+                            'certificates': []
                         }
-                        for listener in listeners.get('Listeners', [])
-                    ]
-                }
-            ))
+                        
+                        # Get SSL certificates if present
+                        if 'Certificates' in listener:
+                            for cert in listener['Certificates']:
+                                try:
+                                    cert_details = self.session.client('acm').describe_certificate(
+                                        CertificateArn=cert['CertificateArn']
+                                    )['Certificate']
+                                    listener_info['certificates'].append({
+                                        'arn': cert['CertificateArn'],
+                                        'domain_name': cert_details.get('DomainName'),
+                                        'status': cert_details.get('Status'),
+                                        'type': cert_details.get('Type'),
+                                        'issued_at': cert_details.get('IssuedAt').isoformat() if cert_details.get('IssuedAt') else None,
+                                        'expires_at': cert_details.get('NotAfter').isoformat() if cert_details.get('NotAfter') else None
+                                    })
+                                except ClientError as e:
+                                    logger.warning(f"Error getting certificate details: {str(e)}")
+                        
+                        # Get target groups for this listener
+                        if 'DefaultActions' in listener:
+                            for action in listener['DefaultActions']:
+                                if action['Type'] == 'forward' and 'TargetGroupArn' in action:
+                                    try:
+                                        tg_details = elb.describe_target_groups(
+                                            TargetGroupArns=[action['TargetGroupArn']]
+                                        )['TargetGroups'][0]
+                                        
+                                        # Get health check configuration
+                                        health_check = {
+                                            'protocol': tg_details['HealthCheckProtocol'],
+                                            'port': tg_details['HealthCheckPort'],
+                                            'path': tg_details.get('HealthCheckPath'),
+                                            'interval': tg_details['HealthCheckIntervalSeconds'],
+                                            'timeout': tg_details['HealthCheckTimeoutSeconds'],
+                                            'healthy_threshold': tg_details['HealthyThresholdCount'],
+                                            'unhealthy_threshold': tg_details['UnhealthyThresholdCount'],
+                                            'matcher': tg_details.get('Matcher', {}).get('HttpCode')
+                                        }
+                                        
+                                        # Get target health
+                                        targets = elb.describe_target_health(
+                                            TargetGroupArn=action['TargetGroupArn']
+                                        )['TargetHealthDescriptions']
+                                        
+                                        listener_info['target_groups'] = {
+                                            'arn': action['TargetGroupArn'],
+                                            'name': tg_details['TargetGroupName'],
+                                            'protocol': tg_details['Protocol'],
+                                            'port': tg_details['Port'],
+                                            'target_type': tg_details['TargetType'],
+                                            'health_check': health_check,
+                                            'targets': [{
+                                                'id': target['Target']['Id'],
+                                                'port': target['Target'].get('Port'),
+                                                'health': {
+                                                    'state': target['TargetHealth']['State'],
+                                                    'reason': target['TargetHealth'].get('Reason'),
+                                                    'description': target['TargetHealth'].get('Description')
+                                                }
+                                            } for target in targets]
+                                        }
+                                    except ClientError as e:
+                                        logger.warning(f"Error getting target group details: {str(e)}")
+                        
+                        listeners.append(listener_info)
+                except ClientError as e:
+                    logger.warning(f"Error getting listeners for load balancer {lb['LoadBalancerArn']}: {str(e)}")
+                
+                # Get security groups
+                security_groups = []
+                if 'SecurityGroups' in lb:
+                    try:
+                        ec2 = self.session.client('ec2')
+                        sg_details = ec2.describe_security_groups(
+                            GroupIds=lb['SecurityGroups']
+                        )['SecurityGroups']
+                        
+                        for sg in sg_details:
+                            security_groups.append({
+                                'id': sg['GroupId'],
+                                'name': sg['GroupName'],
+                                'description': sg['Description'],
+                                'vpc_id': sg['VpcId'],
+                                'inbound_rules': [{
+                                    'protocol': rule['IpProtocol'],
+                                    'from_port': rule.get('FromPort'),
+                                    'to_port': rule.get('ToPort'),
+                                    'sources': [
+                                        ip_range['CidrIp'] for ip_range in rule.get('IpRanges', [])
+                                    ] + [
+                                        group['GroupId'] for group in rule.get('UserIdGroupPairs', [])
+                                    ]
+                                } for rule in sg['IpPermissions']],
+                                'outbound_rules': [{
+                                    'protocol': rule['IpProtocol'],
+                                    'from_port': rule.get('FromPort'),
+                                    'to_port': rule.get('ToPort'),
+                                    'destinations': [
+                                        ip_range['CidrIp'] for ip_range in rule.get('IpRanges', [])
+                                    ] + [
+                                        group['GroupId'] for group in rule.get('UserIdGroupPairs', [])
+                                    ]
+                                } for rule in sg['IpPermissionsEgress']]
+                            })
+                    except ClientError as e:
+                        logger.warning(f"Error getting security groups for load balancer: {str(e)}")
+
+                resources.append(ResourceSummary(
+                    id=uuid4(),
+                    resource_id=lb['LoadBalancerArn'],
+                    type='load_balancer',
+                    name=name,
+                    region=self.credentials.region,
+                    status=lb.get('State', {}).get('Code', 'unknown'),
+                    created_at=datetime.now(timezone.utc),
+                    details={
+                        'status': lb.get('State', {}).get('Code', 'unknown'),
+                        'dns_name': lb['DNSName'],
+                        'type': lb['Type'],
+                        'scheme': lb['Scheme'],
+                        'vpc_id': lb.get('VpcId'),
+                        'availability_zones': lb['AvailabilityZones'],
+                        'listeners': listeners,
+                        'security_groups': security_groups
+                    }
+                ))
+        except ClientError as e:
+            logger.error(f"Error describing load balancers: {str(e)}")
 
         # Get EKS clusters and node groups
         try:
