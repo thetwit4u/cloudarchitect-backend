@@ -481,6 +481,7 @@ class AWSService:
                     created_at=datetime.now(timezone.utc),
                     details={
                         'description': sg.get('Description', ''),
+                        'status':'active',
                         'vpc_id': sg.get('VpcId', ''),
                         'inbound_rules': inbound_rules,
                         'outbound_rules': outbound_rules,
@@ -678,6 +679,7 @@ class AWSService:
 
                 details = {
                     'region': region,
+                    'status':'active',
                     'creation_date': bucket['CreationDate'].isoformat(),
                     'storage_classes': {},
                     'public_access': {},
@@ -726,7 +728,6 @@ class AWSService:
                     type='s3',
                     name=bucket_name,
                     region=region,
-                    status='available',
                     created_at=bucket['CreationDate'].replace(tzinfo=timezone.utc),
                     details=details
                 ))
