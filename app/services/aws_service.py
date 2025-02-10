@@ -751,6 +751,50 @@ class AWSService:
                 # Get cluster details
                 cluster = eks.describe_cluster(name=cluster_name)['cluster']
                 
+                # Get IAM role details
+                try:
+                    iam = self.session.client('iam')
+                    role_name = cluster['roleArn'].split('/')[-1]
+                    role_response = iam.get_role(RoleName=role_name)
+                    role_details = {
+                        'arn': role_response['Role']['Arn'],
+                        'name': role_response['Role']['RoleName'],
+                        'path': role_response['Role']['Path'],
+                        'create_date': role_response['Role']['CreateDate'].isoformat(),
+                        'permissions_boundary': role_response['Role'].get('PermissionsBoundary', {}),
+                        'tags': role_response['Role'].get('Tags', [])
+                    }
+                except ClientError as e:
+                    logger.warning(f"Could not get IAM role details for cluster {cluster_name}: {str(e)}")
+                    role_details = None
+
+                # Get security group details
+                security_groups = []
+                try:
+                    ec2 = self.session.client('ec2')
+                    sg_ids = cluster['resourcesVpcConfig'].get('securityGroupIds', [])
+                    if cluster['resourcesVpcConfig'].get('clusterSecurityGroupId'):
+                        sg_ids.append(cluster['resourcesVpcConfig']['clusterSecurityGroupId'])
+                    
+                    if sg_ids:
+                        sg_response = ec2.describe_security_groups(GroupIds=sg_ids)
+                        for sg in sg_response['SecurityGroups']:
+                            security_groups.append({
+                                'id': sg['GroupId'],
+                                'name': sg['GroupName'],
+                                'description': sg.get('Description', ''),
+                                'vpc_id': sg.get('VpcId', ''),
+                                'inbound_rules': [{
+                                    'protocol': rule.get('IpProtocol', 'all'),
+                                    'from_port': rule.get('FromPort', -1),
+                                    'to_port': rule.get('ToPort', -1),
+                                    'sources': [ip_range.get('CidrIp') for ip_range in rule.get('IpRanges', [])]
+                                } for rule in sg.get('IpPermissions', [])]
+                            })
+                except ClientError as e:
+                    logger.warning(f"Could not get security group details for cluster {cluster_name}: {str(e)}")
+                    security_groups = []
+
                 # Get node groups for this cluster
                 nodegroups = eks.list_nodegroups(clusterName=cluster_name)
                 nodegroup_details = []
@@ -829,13 +873,15 @@ class AWSService:
                         'version': cluster['version'],
                         'endpoint': cluster['endpoint'],
                         'role_arn': cluster['roleArn'],
+                        'role_details': role_details,
                         'vpc_config': {
                             'vpc_id': cluster['resourcesVpcConfig'].get('vpcId'),
                             'subnet_ids': cluster['resourcesVpcConfig'].get('subnetIds', []),
-                            'security_groups': cluster['resourcesVpcConfig'].get('securityGroupIds', []),
+                            'security_groups': security_groups,
                             'cluster_security_group': cluster['resourcesVpcConfig'].get('clusterSecurityGroupId'),
                             'endpoint_public_access': cluster['resourcesVpcConfig'].get('endpointPublicAccess'),
-                            'endpoint_private_access': cluster['resourcesVpcConfig'].get('endpointPrivateAccess')
+                            'endpoint_private_access': cluster['resourcesVpcConfig'].get('endpointPrivateAccess'),
+                            'public_access_cidrs': cluster['resourcesVpcConfig'].get('publicAccessCidrs', [])
                         },
                         'logging': cluster.get('logging', {}).get('clusterLogging', []),
                         'nodegroups': nodegroup_details,
