@@ -131,7 +131,7 @@ def get_resources(project_id: str, db: Session = Depends(get_db)) -> List[Resour
         )
 
 @router.post("/{project_id}/resources/discover")
-def start_resource_discovery(
+async def start_resource_discovery(
     project_id: UUID,
     current_user: UserResponse = Depends(get_current_user),
     db: Session = Depends(get_db)
@@ -156,23 +156,14 @@ def start_resource_discovery(
 
         # Initialize AWS service
         aws_service = AWSService(db, str(project_id), str(current_user.id))
-        resources = aws_service.list_resources()
         
-        logger.info(f"Resource discovery found {len(resources)} resources")
-        if resources:
-            logger.debug(f"First discovered resource: {resources[0].dict()}")
+        # Start async discovery
+        await aws_service.start_discovery()
         
-        # Update cache with new resources
-        _update_cache(str(project_id), resources, db)
-        
-        # Verify resources were saved
-        saved_resources = db.query(Resource).filter(Resource.project_id == project_id).all()
-        logger.info(f"Verified {len(saved_resources)} resources saved to database")
-        if saved_resources:
-            logger.debug(f"First saved resource: {vars(saved_resources[0])}")
-        
-        logger.info(f"Resource discovery completed successfully")
-        return {"message": "Resource discovery started", "resource_count": len(resources)}
+        return {
+            "message": "Resource discovery started",
+            "status": "running"
+        }
         
     except Exception as e:
         logger.error(f"Error during resource discovery: {str(e)}", exc_info=True)
@@ -277,25 +268,26 @@ def get_discovery_status(
     """
     logger.info(f"Checking discovery status for project {project_id}")
     try:
-        aws_service = AWSService(db, str(project_id), str(current_user.id))
-        # Get the project and its last scan time
-        project = db.query(Project).filter(
-            Project.id == project_id
-        ).first()
+        # Get status from AWSService
+        status = AWSService.get_discovery_status(str(project_id))
+        if not status:
+            # No discovery in progress, check if we have resources
+            project = db.query(Project).filter(Project.id == project_id).first()
+            if not project:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Project not found"
+                )
+            
+            return {
+                "status": "completed",
+                "message": "No discovery in progress",
+                "last_scan_at": project.last_scan_at.isoformat() if project.last_scan_at else None
+            }
+            
+        return status
         
-        if not project:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Project not found"
-            )
-        
-        logger.info("Discovery status: completed")
-        return {
-            "status": "completed",
-            "message": "Resource discovery is complete",
-            "last_scan_at": project.last_scan_at.isoformat() if project.last_scan_at else None
-        }
-    except ValueError as e:
+    except Exception as e:
         logger.error(f"Error checking discovery status: {str(e)}")
         return {
             "status": "error",
