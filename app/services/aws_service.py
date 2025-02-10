@@ -19,7 +19,7 @@ class DiscoveryStatus:
     def __init__(self):
         self.current_service = ""
         self.progress = 0
-        self.total_services = 9  # Total number of AWS services we scan
+        self.total_services = 10  # Total number of AWS services we scan
         self.resources_found = 0
         self.status = "running"
         self.error = None
@@ -146,6 +146,12 @@ class AWSService:
             opensearch_resources = self._discover_opensearch_domains()
             resources.extend(opensearch_resources)
             status.add_resources(len(opensearch_resources))
+
+            # IAM Resources
+            status.update("IAM Resources")
+            iam_resources = self._discover_iam_resources()
+            resources.extend(iam_resources)
+            status.add_resources(len(iam_resources))
 
             # Save resources to database
             status.update("Saving to Database", increment=False)
@@ -1079,4 +1085,133 @@ class AWSService:
 
         except ClientError as e:
             logger.error(f"Error listing OpenSearch domains: {str(e)}")
+            return []
+
+    def _discover_iam_resources(self) -> List[ResourceSummary]:
+        """Discover IAM Resources"""
+        try:
+            iam = self.session.client('iam')
+            resources = []
+            
+            # Get users
+            try:
+                paginator = iam.get_paginator('list_users')
+                for page in paginator.paginate():
+                    for user in page['Users']:
+                        # Get user's policies
+                        attached_policies = []
+                        for policy in iam.list_attached_user_policies(UserName=user['UserName'])['AttachedPolicies']:
+                            policy_details = iam.get_policy(PolicyArn=policy['PolicyArn'])['Policy']
+                            policy_version = iam.get_policy_version(
+                                PolicyArn=policy['PolicyArn'],
+                                VersionId=policy_details['DefaultVersionId']
+                            )['PolicyVersion']
+                            attached_policies.append({
+                                'name': policy['PolicyName'],
+                                'arn': policy['PolicyArn'],
+                                'description': policy_details.get('Description', ''),
+                                'document': policy_version['Document']
+                            })
+
+                        resources.append(ResourceSummary(
+                            id=uuid4(),
+                            resource_id=user['UserId'],
+                            type='iam_user',
+                            name=user['UserName'],
+                            region='global',
+                            status='active',
+                            created_at=user['CreateDate'].replace(tzinfo=timezone.utc),
+                            details={
+                                'arn': user['Arn'],
+                                'path': user['Path'],
+                                'tags': user.get('Tags', []),
+                                'attached_policies': attached_policies,
+                                'groups': [group['GroupName'] for group in iam.list_groups_for_user(UserName=user['UserName'])['Groups']],
+                                'access_keys': [
+                                    {
+                                        'id': key['AccessKeyId'],
+                                        'status': key['Status'],
+                                        'created': key['CreateDate'].isoformat()
+                                    }
+                                    for key in iam.list_access_keys(UserName=user['UserName'])['AccessKeyMetadata']
+                                ]
+                            }
+                        ))
+            except ClientError as e:
+                logger.warning(f"Could not get IAM users: {str(e)}")
+
+            # Get roles
+            try:
+                paginator = iam.get_paginator('list_roles')
+                for page in paginator.paginate():
+                    for role in page['Roles']:
+                        # Get role's policies
+                        attached_policies = []
+                        for policy in iam.list_attached_role_policies(RoleName=role['RoleName'])['AttachedPolicies']:
+                            policy_details = iam.get_policy(PolicyArn=policy['PolicyArn'])['Policy']
+                            policy_version = iam.get_policy_version(
+                                PolicyArn=policy['PolicyArn'],
+                                VersionId=policy_details['DefaultVersionId']
+                            )['PolicyVersion']
+                            attached_policies.append({
+                                'name': policy['PolicyName'],
+                                'arn': policy['PolicyArn'],
+                                'description': policy_details.get('Description', ''),
+                                'document': policy_version['Document']
+                            })
+
+                        resources.append(ResourceSummary(
+                            id=uuid4(),
+                            resource_id=role['RoleId'],
+                            type='iam_role',
+                            name=role['RoleName'],
+                            region='global',
+                            status='active',
+                            created_at=role['CreateDate'].replace(tzinfo=timezone.utc),
+                            details={
+                                'arn': role['Arn'],
+                                'path': role['Path'],
+                                'tags': role.get('Tags', []),
+                                'trust_policy': role['AssumeRolePolicyDocument'],
+                                'attached_policies': attached_policies,
+                                'service_linked': role.get('Path', '').startswith('/aws-service-role/'),
+                                'max_session_duration': role.get('MaxSessionDuration', 3600)
+                            }
+                        ))
+            except ClientError as e:
+                logger.warning(f"Could not get IAM roles: {str(e)}")
+
+            # Get instance profiles
+            try:
+                paginator = iam.get_paginator('list_instance_profiles')
+                for page in paginator.paginate():
+                    for profile in page['InstanceProfiles']:
+                        resources.append(ResourceSummary(
+                            id=uuid4(),
+                            resource_id=profile['InstanceProfileId'],
+                            type='iam_instance_profile',
+                            name=profile['InstanceProfileName'],
+                            region='global',
+                            status='active',
+                            created_at=profile['CreateDate'].replace(tzinfo=timezone.utc),
+                            details={
+                                'arn': profile['Arn'],
+                                'path': profile['Path'],
+                                'roles': [
+                                    {
+                                        'name': role['RoleName'],
+                                        'arn': role['Arn'],
+                                        'id': role['RoleId']
+                                    }
+                                    for role in profile.get('Roles', [])
+                                ]
+                            }
+                        ))
+            except ClientError as e:
+                logger.warning(f"Could not get instance profiles: {str(e)}")
+
+            return resources
+
+        except Exception as e:
+            logger.error(f"Error discovering IAM resources: {str(e)}", exc_info=True)
             return []
