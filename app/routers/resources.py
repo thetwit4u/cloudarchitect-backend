@@ -8,9 +8,10 @@ from ..core.database import get_db
 from ..models import Resource, Project
 from sqlalchemy.orm import Session
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 import json
+from zoneinfo import ZoneInfo
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -25,7 +26,7 @@ def _get_cached_resources(project_id: str) -> Optional[List[ResourceSummary]]:
     if project_id in _resource_cache:
         cache_entry = _resource_cache[project_id]
         # Check if cache is still valid (less than 5 minutes old)
-        if datetime.now() - cache_entry['timestamp'] < timedelta(minutes=5):
+        if datetime.now(timezone.utc) - cache_entry['timestamp'] < timedelta(minutes=5):
             return cache_entry['resources']
         else:
             # Remove expired cache entry
@@ -38,12 +39,20 @@ def _update_cache(project_id: str, resources: List[ResourceSummary], db: Session
     # Update cache
     _resource_cache[project_id] = {
         'resources': resources,
-        'timestamp': datetime.now()
+        'timestamp': datetime.now(timezone.utc)
     }
     
     try:
         # First, get all existing resources for this project
         project_uuid = UUID(project_id)
+        
+        # Update project's last scan timestamp with UTC
+        project = db.query(Project).filter(Project.id == project_uuid).first()
+        if project:
+            project.last_scan_at = datetime.now(timezone.utc)
+            db.add(project)
+        
+        # Get existing resources
         existing_resources = db.query(Resource).filter(
             Resource.project_id == project_uuid
         ).all()
@@ -269,18 +278,22 @@ def get_discovery_status(
     logger.info(f"Checking discovery status for project {project_id}")
     try:
         aws_service = AWSService(db, str(project_id), str(current_user.id))
-        # Get the latest resource to determine last scan time
-        latest_resource = db.query(Resource).filter(
-            Resource.project_id == project_id
-        ).order_by(Resource.created_at.desc()).first()
+        # Get the project and its last scan time
+        project = db.query(Project).filter(
+            Project.id == project_id
+        ).first()
         
-        last_scan_at = latest_resource.created_at if latest_resource else None
+        if not project:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Project not found"
+            )
         
         logger.info("Discovery status: completed")
         return {
             "status": "completed",
             "message": "Resource discovery is complete",
-            "last_scan_at": last_scan_at.isoformat() if last_scan_at else None
+            "last_scan_at": project.last_scan_at.isoformat() if project.last_scan_at else None
         }
     except ValueError as e:
         logger.error(f"Error checking discovery status: {str(e)}")

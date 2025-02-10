@@ -2,7 +2,7 @@ import boto3
 from botocore.exceptions import ClientError
 from ..schemas.aws import AWSCredentialsBase, ResourceSummary
 from typing import List, Dict, Any, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
 from uuid import UUID, uuid4
 import logging
@@ -121,7 +121,7 @@ class AWSService:
                     name=bucket_name,
                     region=region,
                     status='available',
-                    created_at=bucket['CreationDate'],
+                    created_at=bucket['CreationDate'].replace(tzinfo=timezone.utc),
                     details=details
                 ))
         except ClientError as e:
@@ -164,7 +164,7 @@ class AWSService:
                     name=name,
                     region=self.credentials.region,
                     status=instance['State']['Name'],
-                    created_at=instance['LaunchTime'],
+                    created_at=instance['LaunchTime'].replace(tzinfo=timezone.utc),
                     details={
                         'status': instance['State']['Name'],
                         'instance_type': instance['InstanceType'],
@@ -301,7 +301,7 @@ class AWSService:
                     name=name,
                     region=self.credentials.region,
                     status=vpc['State'],
-                    created_at=datetime.now(),
+                    created_at=datetime.now(timezone.utc),
                     details={
                         'status': vpc['State'],
                         'cidr_block': vpc['CidrBlock'],
@@ -334,7 +334,7 @@ class AWSService:
                 name=name,
                 region=self.credentials.region,
                 status=lb.get('State', {}).get('Code', 'unknown'),
-                created_at=datetime.now(),
+                created_at=datetime.now(timezone.utc),
                 details={
                     'status': lb.get('State', {}).get('Code', 'unknown'),
                     'dns_name': lb['DNSName'],
@@ -434,7 +434,7 @@ class AWSService:
                     name=cluster['name'],
                     region=self.credentials.region,
                     status=cluster['status'],
-                    created_at=cluster['createdAt'],
+                    created_at=cluster['createdAt'].replace(tzinfo=timezone.utc),
                     details={
                         'status': cluster['status'],
                         'version': cluster['version'],
@@ -512,7 +512,7 @@ class AWSService:
                     # Get creation time
                     created_at = domain_info.get('Created')
                     if not isinstance(created_at, datetime):
-                        created_at = datetime.now()
+                        created_at = datetime.now(timezone.utc)
                     
                     # Get instance counts by type
                     instance_counts = {}
@@ -591,7 +591,7 @@ class AWSService:
                     "type": "ec2",
                     "state": instance['State']['Name'],
                     "instance_type": instance['InstanceType'],
-                    "launch_time": instance['LaunchTime'].isoformat(),
+                    "launch_time": instance['LaunchTime'].replace(tzinfo=timezone.utc).isoformat(),
                     "public_ip": instance.get('PublicIpAddress'),
                     "private_ip": instance.get('PrivateIpAddress'),
                     "arn": f"arn:aws:ec2:{self.credentials.region}:{account_id}:instance/{instance['InstanceId']}"

@@ -4,9 +4,13 @@ from sqlalchemy.sql import func
 from sqlalchemy.dialects.postgresql import UUID
 from ..core.database import Base
 import uuid
+from datetime import datetime, timezone
 
 def generate_uuid():
     return str(uuid.uuid4())
+
+def get_current_time():
+    return datetime.now(timezone.utc)
 
 class User(Base):
     __tablename__ = "users"
@@ -33,6 +37,7 @@ class Project(Base):
     user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    last_scan_at = Column(DateTime(timezone=True), nullable=True)
 
     # Relationships
     user = relationship("User", back_populates="projects")
