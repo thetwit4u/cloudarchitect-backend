@@ -1249,7 +1249,6 @@ class AWSService:
                         resources.append(ResourceSummary(
                             id=uuid4(),
                             resource_id=function['FunctionName'],
-                            region=self.credentials.region,
                             type='lambda',
                             name=function['FunctionName'],
                             region=self.credentials.region,
