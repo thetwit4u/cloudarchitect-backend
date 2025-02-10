@@ -12,6 +12,7 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import threading
 import json
+from dateutil import parser
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +20,7 @@ class DiscoveryStatus:
     def __init__(self):
         self.current_service = ""
         self.progress = 0
-        self.total_services = 10  # Total number of AWS services we scan
+        self.total_services = 11  # Total number of AWS services we scan
         self.resources_found = 0
         self.status = "running"
         self.error = None
@@ -152,6 +153,12 @@ class AWSService:
             iam_resources = self._discover_iam_resources()
             resources.extend(iam_resources)
             status.add_resources(len(iam_resources))
+
+            # Lambda Resources
+            status.update("Lambda Resources")
+            lambda_resources = self._discover_lambda_functions()
+            resources.extend(lambda_resources)
+            status.add_resources(len(lambda_resources))
 
             # Save resources to database
             status.update("Saving to Database", increment=False)
@@ -1214,4 +1221,76 @@ class AWSService:
 
         except Exception as e:
             logger.error(f"Error discovering IAM resources: {str(e)}", exc_info=True)
+            return []
+
+    def _discover_lambda_functions(self) -> List[ResourceSummary]:
+        """Discover Lambda Functions"""
+        try:
+            lambda_client = self.session.client('lambda')
+            resources = []
+            
+            try:
+                paginator = lambda_client.get_paginator('list_functions')
+                for page in paginator.paginate():
+                    for function in page['Functions']:
+                        # Get function configuration details
+                        vpc_config = function.get('VpcConfig', {})
+                        
+                        # Get function's IAM role details
+                        role_arn = function.get('Role', '')
+                        role_name = role_arn.split('/')[-1] if role_arn else ''
+                        
+                        # Get function's tags
+                        try:
+                            tags = lambda_client.list_tags(Resource=function['FunctionArn'])['Tags']
+                        except ClientError:
+                            tags = {}
+
+                        resources.append(ResourceSummary(
+                            id=uuid4(),
+                            resource_id=function['FunctionName'],
+                            type='lambda',
+                            name=function['FunctionName'],
+                            region=self.credentials.region,
+                            status='active',  # Lambda functions are always active unless deleted
+                            created_at=function['LastModified'].replace(tzinfo=timezone.utc) if isinstance(function['LastModified'], datetime) else parser.parse(function['LastModified']),
+                            details={
+                                'arn': function['FunctionArn'],
+                                'runtime': function['Runtime'],
+                                'handler': function['Handler'],
+                                'code_size': function['CodeSize'],
+                                'memory': function['MemorySize'],
+                                'timeout': function['Timeout'],
+                                'last_modified': function['LastModified'],
+                                'version': function['Version'],
+                                'description': function.get('Description', ''),
+                                'environment': function.get('Environment', {}).get('Variables', {}),
+                                'layers': [layer['Arn'] for layer in function.get('Layers', [])],
+                                'role': {
+                                    'arn': role_arn,
+                                    'name': role_name
+                                },
+                                'vpc_config': {
+                                    'subnet_ids': vpc_config.get('SubnetIds', []),
+                                    'security_group_ids': vpc_config.get('SecurityGroupIds', []),
+                                    'vpc_id': vpc_config.get('VpcId', '')
+                                } if vpc_config else None,
+                                'tags': tags,
+                                'architectures': function.get('Architectures', []),
+                                'package_type': function.get('PackageType', 'Zip'),
+                                'state': {
+                                    'code': function.get('State', 'Active'),
+                                    'reason': function.get('StateReason', ''),
+                                    'reason_code': function.get('StateReasonCode', '')
+                                }
+                            }
+                        ))
+
+            except ClientError as e:
+                logger.warning(f"Could not list Lambda functions: {str(e)}")
+
+            return resources
+
+        except Exception as e:
+            logger.error(f"Error discovering Lambda functions: {str(e)}", exc_info=True)
             return []
