@@ -251,10 +251,12 @@ def get_resource_summary(
         by_region[region] = by_region.get(region, 0) + 1
     
     return {
-        "total": len(resources),  # Add total count back
+        "total": len(resources),
         "by_type": by_type,
         "by_status": by_status,
-        "by_region": by_region
+        "by_region": by_region,
+        "last_scan_at": project.last_scan_at.isoformat() if project.last_scan_at else None,
+        "discovery_status": AWSService.get_discovery_status(str(project_id))
     }
 
 @router.get("/{project_id}/resources/discover/status")
@@ -271,18 +273,10 @@ def get_discovery_status(
         # Get status from AWSService
         status = AWSService.get_discovery_status(str(project_id))
         if not status:
-            # No discovery in progress, check if we have resources
-            project = db.query(Project).filter(Project.id == project_id).first()
-            if not project:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Project not found"
-                )
-            
+            # No discovery in progress
             return {
                 "status": "completed",
-                "message": "No discovery in progress",
-                "last_scan_at": project.last_scan_at.isoformat() if project.last_scan_at else None
+                "message": "No discovery in progress"
             }
             
         return status
