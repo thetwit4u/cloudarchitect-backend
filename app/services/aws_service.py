@@ -18,7 +18,7 @@ class DiscoveryStatus:
     def __init__(self):
         self.current_service = ""
         self.progress = 0
-        self.total_services = 8  # Total number of AWS services we scan
+        self.total_services = 9  # Total number of AWS services we scan
         self.resources_found = 0
         self.status = "running"
         self.error = None
@@ -116,6 +116,12 @@ class AWSService:
             resources.extend(vpc_resources)
             status.add_resources(len(vpc_resources))
 
+            # Security Groups
+            status.update("Security Groups")
+            sg_resources = self._discover_security_groups()
+            resources.extend(sg_resources)
+            status.add_resources(len(sg_resources))
+
             # Load Balancers
             status.update("Load Balancers")
             lb_resources = self._discover_load_balancers()
@@ -141,7 +147,7 @@ class AWSService:
             status.add_resources(len(opensearch_resources))
 
             # Save resources to database
-            status.update("Saving to Database")
+            status.update("Saving to Database", increment=False)
             self._save_resources(resources)
 
             return resources
@@ -430,6 +436,70 @@ class AWSService:
         except ClientError as e:
             logger.error(f"Error describing VPCs: {str(e)}")
             return []
+
+    def _discover_security_groups(self) -> List[ResourceSummary]:
+        """Discover Security Groups and their rules"""
+        try:
+            ec2_client = self.session.client('ec2')
+            security_groups = ec2_client.describe_security_groups()['SecurityGroups']
+            resources = []
+
+            for sg in security_groups:
+                # Get resource attachments
+                attachments = ec2_client.describe_network_interfaces(
+                    Filters=[{'Name': 'group-id', 'Values': [sg['GroupId']]}]
+                )['NetworkInterfaces']
+
+                # Build rules details
+                inbound_rules = [{
+                    'protocol': rule.get('IpProtocol', 'all'),
+                    'from_port': rule.get('FromPort', -1),
+                    'to_port': rule.get('ToPort', -1),
+                    'sources': [
+                        ip_range.get('CidrIp') for ip_range in rule.get('IpRanges', [])
+                    ] + [
+                        group.get('GroupId') for group in rule.get('UserIdGroupPairs', [])
+                    ]
+                } for rule in sg.get('IpPermissions', [])]
+
+                outbound_rules = [{
+                    'protocol': rule.get('IpProtocol', 'all'),
+                    'from_port': rule.get('FromPort', -1),
+                    'to_port': rule.get('ToPort', -1),
+                    'destinations': [
+                        ip_range.get('CidrIp') for ip_range in rule.get('IpRanges', [])
+                    ] + [
+                        group.get('GroupId') for group in rule.get('UserIdGroupPairs', [])
+                    ]
+                } for rule in sg.get('IpPermissionsEgress', [])]
+
+                resource = ResourceSummary(
+                    id=str(uuid4()),
+                    resource_id=sg['GroupId'],
+                    name=sg.get('GroupName', ''),
+                    type='SecurityGroup',
+                    created_at=datetime.now(timezone.utc),
+                    details={
+                        'description': sg.get('Description', ''),
+                        'vpc_id': sg.get('VpcId', ''),
+                        'inbound_rules': inbound_rules,
+                        'outbound_rules': outbound_rules,
+                        'attachments': [{
+                            'id': attachment['NetworkInterfaceId'],
+                            'type': 'NetworkInterface',
+                            'description': attachment.get('Description', ''),
+                            'private_ip': attachment.get('PrivateIpAddress', ''),
+                            'instance_id': attachment.get('Attachment', {}).get('InstanceId', '')
+                        } for attachment in attachments]
+                    }
+                )
+                resources.append(resource)
+
+            return resources
+
+        except Exception as e:
+            logger.error(f"Error discovering security groups: {str(e)}", exc_info=True)
+            raise
 
     def _discover_load_balancers(self) -> List[ResourceSummary]:
         """Discover Load Balancers"""
