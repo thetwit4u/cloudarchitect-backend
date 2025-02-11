@@ -57,6 +57,41 @@ class DiagramService:
                     "children": []
                 }
 
+                # Add Internet Gateway if found in route tables
+                igw_routes = []
+                nat_gateways = set()
+                if vpc_details and 'subnets' in vpc_details:
+                    for subnet in vpc_details['subnets']:
+                        for route in subnet.get('routes', []):
+                            if route['target'].get('type') == 'gateway' and route['target'].get('id', '').startswith('igw-'):
+                                igw_routes.append(route)
+                            elif route['target'].get('type') == 'nat' and route['target'].get('id', '').startswith('nat-'):
+                                nat_gateways.add(route['target'].get('id'))
+                
+                if igw_routes:
+                    igw_id = igw_routes[0]['target']['id']
+                    igw_node = {
+                        "id": igw_id,
+                        "name": "Internet Gateway",
+                        "type": "internet_gateway",
+                        "details": {},
+                        "children": []
+                    }
+                    vpc_node["children"].append(igw_node)
+                    logger.debug(f"Added Internet Gateway {igw_id} to VPC {vpc.name}")
+
+                # Add NAT Gateways
+                for nat_id in nat_gateways:
+                    nat_node = {
+                        "id": nat_id,
+                        "name": "NAT Gateway",
+                        "type": "nat_gateway",
+                        "details": {},
+                        "children": []
+                    }
+                    vpc_node["children"].append(nat_node)
+                    logger.debug(f"Added NAT Gateway {nat_id} to VPC {vpc.name}")
+
                 # Create subnet nodes from VPC details
                 if vpc_details and 'subnets' in vpc_details:
                     for subnet_info in vpc_details['subnets']:
