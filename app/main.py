@@ -1,12 +1,13 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from .core.database import Base, engine
 from .core.config import get_settings
 from .routers import auth, aws, projects, resources, aws_connections, diagrams
-from .core.logging import setup_logging
+from .core.logging_config import setup_logging
 
 settings = get_settings()
 
-# Setup logging
+# Set up logging
 setup_logging()
 
 # API version prefix
