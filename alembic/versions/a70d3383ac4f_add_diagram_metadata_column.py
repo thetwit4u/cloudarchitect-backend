@@ -9,6 +9,7 @@ from typing import Sequence, Union
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.sql import func
 
 
 # revision identifiers, used by Alembic.
@@ -23,8 +24,16 @@ def upgrade() -> None:
     op.add_column('diagram_history',
         sa.Column('diagram_metadata', sa.JSON(), nullable=True)
     )
+    # Add updated_at column to diagram_history table
+    op.add_column('diagram_history',
+        sa.Column('updated_at', sa.DateTime(timezone=True), 
+                 server_default=func.now(), 
+                 onupdate=func.now(),
+                 nullable=True)
+    )
 
 
 def downgrade() -> None:
-    # Remove diagram_metadata column from diagram_history table
+    # Remove diagram_metadata and updated_at columns from diagram_history table
     op.drop_column('diagram_history', 'diagram_metadata')
+    op.drop_column('diagram_history', 'updated_at')
