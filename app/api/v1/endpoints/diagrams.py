@@ -82,3 +82,20 @@ def get_layout(
     if not layout:
         raise HTTPException(status_code=404, detail="Layout not found")
     return layout
+
+@router.delete("/{project_id}/diagrams/{diagram_id}")
+def delete_diagram(
+    project_id: UUID,
+    diagram_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Delete a specific diagram version.
+    """
+    diagram_service = DiagramService(db, str(project_id), current_user["id"])
+    try:
+        diagram_service.delete_diagram(str(diagram_id))
+        return {"message": "Diagram deleted successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))

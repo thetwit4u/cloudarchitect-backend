@@ -223,6 +223,37 @@ class DiagramService:
             logger.error(f"Error retrieving resources: {str(e)}", exc_info=True)
             raise
 
+    def get_diagram_history(self, limit: int = 10) -> List[DiagramHistory]:
+        """Get diagram version history for a project."""
+        return self.db.query(DiagramHistory).filter(
+            DiagramHistory.project_id == self.project_id
+        ).order_by(DiagramHistory.created_at.desc()).limit(limit).all()
+
+    def delete_diagram(self, diagram_id: str) -> None:
+        """Delete a specific diagram and its associated layouts."""
+        logger.info(f"Deleting diagram {diagram_id}")
+        try:
+            # First delete associated layouts
+            self.db.query(DiagramLayout).filter(
+                DiagramLayout.diagram_id == diagram_id
+            ).delete()
+
+            # Then delete the diagram
+            result = self.db.query(DiagramHistory).filter(
+                DiagramHistory.id == diagram_id,
+                DiagramHistory.project_id == self.project_id  # Ensure it belongs to the project
+            ).delete()
+
+            if result == 0:
+                raise Exception("Diagram not found")
+
+            self.db.commit()
+            logger.info("Diagram deleted successfully")
+        except Exception as e:
+            self.db.rollback()
+            logger.error(f"Error deleting diagram: {str(e)}", exc_info=True)
+            raise
+
     def _generate_version(self) -> str:
         """Generate a new version string."""
         return datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")

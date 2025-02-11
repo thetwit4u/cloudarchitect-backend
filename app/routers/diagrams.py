@@ -12,6 +12,8 @@ from ..core.auth import get_current_user
 import uuid
 from datetime import datetime, timezone
 import logging
+from sqlalchemy import delete
+from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
 
@@ -49,38 +51,10 @@ async def create_diagram(
         if data and data.diagram_metadata:
             metadata.update(data.diagram_metadata)
             
-        diagram = DiagramHistory(
-            project_id=project_id,
-            user_id=current_user.id,
-            version="1.0.0",  # Initial version
-            diagram_metadata=metadata
-        )
-        db.add(diagram)
-        
-        try:
-            # First commit to get the diagram ID
-            logger.debug("Committing diagram...")
-            db.commit()
-            db.refresh(diagram)
-            
-            # Now create the layout with the diagram ID
-            logger.debug("Creating initial layout...")
-            layout = DiagramLayout(
-                diagram_id=diagram.id,
-                layout_data=relationships,
-                is_default=True
-            )
-            db.add(layout)
-            
-            # Commit the layout
-            logger.debug("Committing layout...")
-            db.commit()
-            logger.info(f"Successfully created diagram {diagram.id} for project {project_id}")
-            return diagram
-        except Exception as e:
-            logger.error(f"Failed to commit diagram creation: {str(e)}")
-            db.rollback()
-            raise HTTPException(status_code=500, detail="Failed to create diagram")
+        # Use service to create diagram with proper versioning
+        diagram = service.save_diagram(metadata)
+        logger.info(f"Successfully created diagram {diagram.id} for project {project_id}")
+        return diagram
     except Exception as e:
         logger.error(f"Error creating diagram: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -181,4 +155,36 @@ async def get_default_layout(
         return layout
     except Exception as e:
         logger.error(f"Error retrieving default layout: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete("/projects/{project_id}/diagrams/{diagram_id}", status_code=204)
+async def delete_project_diagram(
+    project_id: uuid.UUID,
+    diagram_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(get_current_user)
+):
+    """Delete a specific diagram version."""
+    try:
+        logger.info(f"Deleting diagram {diagram_id} from project {project_id}")
+        service = DiagramService(db, str(project_id), str(current_user.id))
+        service.delete_diagram(str(diagram_id))
+        return None
+    except Exception as e:
+        logger.error(f"Error deleting diagram: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.delete("/{diagram_id}", response_model=dict)
+async def delete_diagram(diagram_id: str, db: AsyncSession = Depends(get_db)):
+    """Delete a diagram by ID"""
+    try:
+        logger.info(f"Deleting diagram {diagram_id}")
+        async with db.begin():
+            stmt = delete(DiagramHistory).where(DiagramHistory.id == diagram_id)
+            result = await db.execute(stmt)
+            if result.rowcount == 0:
+                raise HTTPException(status_code=404, detail="Diagram not found")
+        return {"message": "Diagram deleted successfully"}
+    except Exception as e:
+        logger.error(f"Error deleting diagram: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
