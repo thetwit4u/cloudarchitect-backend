@@ -43,6 +43,7 @@ class Project(Base):
     user = relationship("User", back_populates="projects")
     resources = relationship("Resource", back_populates="project", cascade="all, delete-orphan")
     aws_credentials = relationship("AWSCredentials", back_populates="project", cascade="all, delete-orphan", uselist=False)
+    diagrams = relationship("DiagramHistory", back_populates="project", cascade="all, delete-orphan")
 
 class Resource(Base):
     __tablename__ = "resources"
@@ -84,9 +85,39 @@ class AWSCredentials(Base):
     # Relationships
     project = relationship("Project", back_populates="aws_credentials")
 
+class DiagramHistory(Base):
+    __tablename__ = "diagram_history"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=generate_uuid)
+    project_id = Column(UUID(as_uuid=True), ForeignKey("projects.id", ondelete="CASCADE"))
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"))
+    version = Column(String, nullable=False)
+    diagram_metadata = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    # Relationships
+    project = relationship("Project", back_populates="diagrams")
+    layouts = relationship("DiagramLayout", back_populates="diagram", cascade="all, delete-orphan")
+
+class DiagramLayout(Base):
+    __tablename__ = "diagram_layouts"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=generate_uuid)
+    diagram_id = Column(UUID(as_uuid=True), ForeignKey("diagram_history.id", ondelete="CASCADE"))
+    layout_data = Column(JSON, nullable=False)
+    is_default = Column(Boolean, default=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    # Relationships
+    diagram = relationship("DiagramHistory", back_populates="layouts")
+
 User = User
 Project = Project
 AWSCredentials = AWSCredentials
 Resource = Resource
+DiagramHistory = DiagramHistory
+DiagramLayout = DiagramLayout
 
-__all__ = ["User", "Project", "AWSCredentials", "Resource"]
+__all__ = ["User", "Project", "AWSCredentials", "Resource", "DiagramHistory", "DiagramLayout"]
