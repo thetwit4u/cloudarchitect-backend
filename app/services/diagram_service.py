@@ -23,9 +23,7 @@ class DiagramService:
         a hierarchical structure suitable for D3.js visualization.
         """
         # Get all resources for the project
-        resources = self.db.query(Resource).filter(
-            Resource.project_id == self.project_id
-        ).all()
+        resources = self.get_project_resources()
 
         # Create nodes dictionary with resource IDs as keys
         nodes = {}
@@ -107,6 +105,12 @@ class DiagramService:
             DiagramLayout.diagram_id == diagram_id,
             DiagramLayout.is_default == True
         ).first()
+
+    def get_project_resources(self) -> List[Resource]:
+        """Get all resources for the project."""
+        return self.db.query(Resource).filter(
+            Resource.project_id == self.project_id
+        ).all()
 
     def _generate_version(self) -> str:
         """Generate a version string for the diagram."""

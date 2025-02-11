@@ -10,6 +10,7 @@ from ..schemas.diagram import DiagramResponse, DiagramCreate, LayoutResponse, La
 from ..models import DiagramHistory, DiagramLayout
 from ..core.auth import get_current_user
 import uuid
+from datetime import datetime, timezone
 
 router = APIRouter()
 
@@ -26,12 +27,19 @@ async def create_diagram(
     # Extract relationships and create diagram
     relationships = service.extract_relationships()
     
+    # Count total resources
+    resource_count = len(service.get_project_resources())
+    
     # Create diagram history entry
     diagram = DiagramHistory(
         project_id=project_id,
         user_id=current_user["id"],
         version="1.0.0",  # Initial version
-        diagram_metadata=data.diagram_metadata if data else {}
+        diagram_metadata={
+            **(data.diagram_metadata if data else {}),
+            "resourceCount": resource_count,
+            "generatedAt": datetime.now(timezone.utc).isoformat()
+        }
     )
     db.add(diagram)
     
