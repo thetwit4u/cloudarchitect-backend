@@ -129,42 +129,32 @@ class DiagramService:
                             logger.debug(f"Added NAT Gateway {nat['id']} to subnet {subnet_info['id']}")
 
                         # Find resources in this subnet
-                        if 'network_interfaces' in vpc_details:
-                            for eni in vpc_details['network_interfaces']:
-                                if eni and isinstance(eni, dict) and eni.get('subnet_id') == subnet_info['id']:
-                                    attachment = eni.get('attachment', {})
-                                    if attachment and isinstance(attachment, dict):
-                                        instance_id = attachment.get('instance_id')
-                                        if instance_id:
-                                            instance = next(
-                                                (r for r in resources if r.type == 'ec2' and 
-                                                 r.details_json.get('instance_id') == instance_id), 
-                                                None
-                                            )
-                                            if instance:
-                                                try:
-                                                    instance_node = {
-                                                        "id": str(instance.id),
-                                                        "name": instance.name,
-                                                        "type": "ec2",
-                                                        "details": {
-                                                            **instance.details_json,
-                                                            "security_groups": [
-                                                                {"id": sg_id, "name": next(
-                                                                    (r.name for r in resources 
-                                                                     if r.type == 'security_group' and 
-                                                                     r.details_json.get('group_id') == sg_id),
-                                                                    sg_id
-                                                                )}
-                                                                for sg_id in eni.get('security_groups', [])
-                                                            ]
-                                                        },
-                                                        "children": []
-                                                    }
-                                                    subnet_node["children"].append(instance_node)
-                                                    logger.debug(f"Added EC2 instance {instance.name} to subnet {subnet_info['id']}")
-                                                except Exception as e:
-                                                    logger.error(f"Error adding EC2 instance to subnet: {str(e)}", exc_info=True)
+                        for resource in resources:
+                            if resource.type == 'ec2' and resource.details_json:
+                                if resource.details_json.get('subnet_id') == subnet_info['id']:
+                                    try:
+                                        instance_node = {
+                                            "id": str(resource.id),
+                                            "name": resource.name,
+                                            "type": "ec2",
+                                            "details": {
+                                                **resource.details_json,
+                                                "security_groups": [
+                                                    {"id": sg_id, "name": next(
+                                                        (r.name for r in resources 
+                                                         if r.type == 'security_group' and 
+                                                         r.details_json.get('group_id') == sg_id),
+                                                        sg_id
+                                                    )}
+                                                    for sg_id in resource.details_json.get('security_groups', [])
+                                                ]
+                                            },
+                                            "children": []
+                                        }
+                                        subnet_node["children"].append(instance_node)
+                                        logger.debug(f"Added EC2 instance {resource.name} to subnet {subnet_info['id']}")
+                                    except Exception as e:
+                                        logger.error(f"Error adding EC2 instance to subnet: {str(e)}", exc_info=True)
 
                         vpc_node["children"].append(subnet_node)
                         logger.debug(f"Added subnet {subnet_info['id']} to VPC {vpc.name}")
