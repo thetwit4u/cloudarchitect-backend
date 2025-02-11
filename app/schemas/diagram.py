@@ -38,7 +38,7 @@ class LayoutResponse(LayoutBase):
     id: UUID4
     diagram_id: UUID4
     created_at: datetime
-    updated_at: datetime
+    updated_at: Optional[datetime] = None
 
     class Config:
         orm_mode = True

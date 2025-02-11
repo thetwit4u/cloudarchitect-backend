@@ -59,6 +59,11 @@ class Resource(Base):
 
     project = relationship("Project", back_populates="resources")
 
+    @property
+    def details_json(self):
+        """Return details as JSON object"""
+        return self.details if self.details else {}
+
     def to_dict(self):
         return {
             "id": str(self.id),

@@ -67,6 +67,22 @@ class Resource(BaseModel):
     # Relationships
     project = relationship("Project", back_populates="resources")
 
+    @property
+    def details_json(self):
+        """Parse and return details as JSON object"""
+        if not self.details:
+            return {}
+        try:
+            import json
+            return json.loads(self.details)
+        except json.JSONDecodeError:
+            return {}
+
+    def to_dict(self):
+        result = super().to_dict()
+        result['details'] = self.details_json
+        return result
+
 class AWSCredentials(BaseModel):
     __tablename__ = "aws_credentials"
 
