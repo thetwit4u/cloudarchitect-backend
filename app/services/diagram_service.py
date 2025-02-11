@@ -59,14 +59,22 @@ class DiagramService:
 
                 # Add Internet Gateway if found in route tables
                 igw_routes = []
-                nat_gateways = set()
-                if vpc_details and 'subnets' in vpc_details:
-                    for subnet in vpc_details['subnets']:
-                        for route in subnet.get('routes', []):
-                            if route['target'].get('type') == 'gateway' and route['target'].get('id', '').startswith('igw-'):
-                                igw_routes.append(route)
-                            elif route['target'].get('type') == 'nat' and route['target'].get('id', '').startswith('nat-'):
-                                nat_gateways.add(route['target'].get('id'))
+                nat_gateways = {}  # Map of subnet_id to NAT Gateway info
+
+                if vpc_details:
+                    # First get NAT Gateway information
+                    if 'nat_gateways' in vpc_details:
+                        for nat in vpc_details['nat_gateways']:
+                            if nat.get('subnet_id') and nat.get('state') == 'available':
+                                nat_gateways[nat['subnet_id']] = nat
+                                logger.debug(f"Found NAT Gateway {nat['id']} in subnet {nat['subnet_id']}")
+
+                    # Then get IGW information
+                    if 'subnets' in vpc_details:
+                        for subnet in vpc_details['subnets']:
+                            for route in subnet.get('routes', []):
+                                if route['target'].get('type') == 'gateway' and route['target'].get('id', '').startswith('igw-'):
+                                    igw_routes.append(route)
                 
                 if igw_routes:
                     igw_id = igw_routes[0]['target']['id']
@@ -79,18 +87,6 @@ class DiagramService:
                     }
                     vpc_node["children"].append(igw_node)
                     logger.debug(f"Added Internet Gateway {igw_id} to VPC {vpc.name}")
-
-                # Add NAT Gateways
-                for nat_id in nat_gateways:
-                    nat_node = {
-                        "id": nat_id,
-                        "name": "NAT Gateway",
-                        "type": "nat_gateway",
-                        "details": {},
-                        "children": []
-                    }
-                    vpc_node["children"].append(nat_node)
-                    logger.debug(f"Added NAT Gateway {nat_id} to VPC {vpc.name}")
 
                 # Create subnet nodes from VPC details
                 if vpc_details and 'subnets' in vpc_details:
@@ -112,7 +108,26 @@ class DiagramService:
                             },
                             "children": []
                         }
-                        
+
+                        # If this subnet has a NAT Gateway, add it as a child
+                        if subnet_info['id'] in nat_gateways:
+                            nat = nat_gateways[subnet_info['id']]
+                            nat_node = {
+                                "id": nat['id'],
+                                "name": "NAT Gateway",
+                                "type": "nat_gateway",
+                                "details": {
+                                    "subnet_id": subnet_info['id'],
+                                    "elastic_ip_id": nat.get('elastic_ip_id'),
+                                    "public_ip": nat.get('public_ip'),
+                                    "private_ip": nat.get('private_ip'),
+                                    "state": nat.get('state')
+                                },
+                                "children": []
+                            }
+                            subnet_node["children"].append(nat_node)
+                            logger.debug(f"Added NAT Gateway {nat['id']} to subnet {subnet_info['id']}")
+
                         # Find resources in this subnet
                         if 'network_interfaces' in vpc_details:
                             for eni in vpc_details['network_interfaces']:
@@ -127,26 +142,29 @@ class DiagramService:
                                                 None
                                             )
                                             if instance:
-                                                instance_node = {
-                                                    "id": str(instance.id),
-                                                    "name": instance.name,
-                                                    "type": "ec2",
-                                                    "details": {
-                                                        **instance.details_json,
-                                                        "security_groups": [
-                                                            {"id": sg_id, "name": next(
-                                                                (r.name for r in resources 
-                                                                 if r.type == 'security_group' and 
-                                                                 r.details_json.get('group_id') == sg_id),
-                                                                sg_id
-                                                            )}
-                                                            for sg_id in eni.get('security_groups', [])
-                                                        ]
-                                                    },
-                                                    "children": []
-                                                }
-                                                subnet_node["children"].append(instance_node)
-                                                logger.debug(f"Added EC2 instance {instance.name} to subnet {subnet_info['id']}")
+                                                try:
+                                                    instance_node = {
+                                                        "id": str(instance.id),
+                                                        "name": instance.name,
+                                                        "type": "ec2",
+                                                        "details": {
+                                                            **instance.details_json,
+                                                            "security_groups": [
+                                                                {"id": sg_id, "name": next(
+                                                                    (r.name for r in resources 
+                                                                     if r.type == 'security_group' and 
+                                                                     r.details_json.get('group_id') == sg_id),
+                                                                    sg_id
+                                                                )}
+                                                                for sg_id in eni.get('security_groups', [])
+                                                            ]
+                                                        },
+                                                        "children": []
+                                                    }
+                                                    subnet_node["children"].append(instance_node)
+                                                    logger.debug(f"Added EC2 instance {instance.name} to subnet {subnet_info['id']}")
+                                                except Exception as e:
+                                                    logger.error(f"Error adding EC2 instance to subnet: {str(e)}", exc_info=True)
 
                         vpc_node["children"].append(subnet_node)
                         logger.debug(f"Added subnet {subnet_info['id']} to VPC {vpc.name}")
