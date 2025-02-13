@@ -29,6 +29,17 @@ class DiagramService:
             resources = self.get_project_resources()
             logger.debug(f"Found {len(resources)} total resources")
             
+            # Debug all resource types
+            resource_types = {r.type for r in resources}
+            logger.info(f"Available resource types: {resource_types}")
+            
+            # Debug load balancers specifically
+            load_balancers = [r for r in resources if r.type == 'load_balancer']
+            logger.info(f"Found {len(load_balancers)} load balancers")
+            for lb in load_balancers:
+                logger.info(f"Load Balancer: {lb.name}")
+                logger.info(f"Load Balancer details: {lb.details_json}")
+            
             # Create resource lookup by ID
             resource_map = {str(r.id): r for r in resources}
             
@@ -131,23 +142,41 @@ class DiagramService:
                         # Find resources in this subnet
                         for resource in resources:
                             if resource.type == 'ec2' and resource.details_json:
-                                if resource.details_json.get('subnet_id') == subnet_info['id']:
+                                # Use ENIs to determine subnet placement
+                                network_interfaces = resource.details_json.get('network_interfaces', [])
+                                primary_eni = next((eni for eni in network_interfaces 
+                                                  if eni.get('subnet_id') == subnet_info['id']), None)
+                                
+                                if primary_eni or resource.details_json.get('subnet_id') == subnet_info['id']:
                                     try:
+                                        # Get security group details
+                                        sg_details = []
+                                        sg_ids = resource.details_json.get('security_groups', [])
+                                        for sg_id in sg_ids:
+                                            sg = next((r for r in resources 
+                                                     if r.type == 'security_group' and 
+                                                     r.resource_id == sg_id), None)
+                                            if sg:
+                                                sg_details.append({
+                                                    'id': sg.resource_id,
+                                                    'name': sg.name,
+                                                    'description': sg.details_json.get('description'),
+                                                    'inbound_rules': sg.details_json.get('inbound_rules', []),
+                                                    'outbound_rules': sg.details_json.get('outbound_rules', [])
+                                                })
+
                                         instance_node = {
                                             "id": str(resource.id),
                                             "name": resource.name,
                                             "type": "ec2",
                                             "details": {
                                                 **resource.details_json,
-                                                "security_groups": [
-                                                    {"id": sg_id, "name": next(
-                                                        (r.name for r in resources 
-                                                         if r.type == 'security_group' and 
-                                                         r.details_json.get('group_id') == sg_id),
-                                                        sg_id
-                                                    )}
-                                                    for sg_id in resource.details_json.get('security_groups', [])
-                                                ]
+                                                "security_groups": sg_details,
+                                                "network_interface": primary_eni or {
+                                                    'subnet_id': resource.details_json.get('subnet_id'),
+                                                    'private_ip': resource.details_json.get('private_ip'),
+                                                    'public_ip': resource.details_json.get('public_ip')
+                                                }
                                             },
                                             "children": []
                                         }
@@ -158,6 +187,87 @@ class DiagramService:
 
                         vpc_node["children"].append(subnet_node)
                         logger.debug(f"Added subnet {subnet_info['id']} to VPC {vpc.name}")
+
+                logger.info("Starting to process load balancers")
+                for resource in resources:
+                    if resource.type == 'load_balancer' and resource.details_json:
+                        lb_details = resource.details_json
+                        lb_type = lb_details.get('type', 'classic').lower()
+                        logger.info(f"Processing load balancer: {resource.name}")
+                        logger.info(f"Load balancer type: {lb_type}")
+                        logger.info(f"Load balancer scheme: {lb_details.get('scheme')}")
+                        logger.info(f"Load balancer AZs: {lb_details.get('availability_zones')}")
+                        
+                        # Get security group details for load balancer
+                        sg_details = []
+                        for sg in lb_details.get('security_groups', []):
+                            sg_details.append({
+                                'id': sg['id'],
+                                'name': sg.get('name', ''),
+                                'description': sg.get('description', ''),
+                                'inbound_rules': sg.get('inbound_rules', []),
+                                'outbound_rules': sg.get('outbound_rules', [])
+                            })
+                        logger.info(f"Found {len(sg_details)} security groups for load balancer")
+
+                        # Process listeners
+                        listeners = []
+                        for listener in lb_details.get('listeners', []):
+                            listener_info = {
+                                'port': listener.get('port'),
+                                'protocol': listener.get('protocol'),
+                                'ssl_policy': listener.get('ssl_policy'),
+                                'certificates': listener.get('certificates', [])
+                            }
+                            listeners.append(listener_info)
+                        logger.info(f"Found {len(listeners)} listeners for load balancer")
+
+                        lb_node = {
+                            "id": str(resource.id),
+                            "name": resource.name,
+                            "type": f"{lb_type}_load_balancer",  # application, network, or classic
+                            "details": {
+                                'status': lb_details.get('status'),
+                                'dns_name': lb_details.get('dns_name'),
+                                'type': lb_type,
+                                'scheme': lb_details.get('scheme'),
+                                'vpc_id': lb_details.get('vpc_id'),
+                                'availability_zones': lb_details.get('availability_zones', []),
+                                'security_groups': sg_details,
+                                'listeners': listeners
+                            },
+                            "children": []
+                        }
+                        logger.info(f"Created load balancer node with type {lb_node['type']}")
+
+                        # Place load balancer based on type and scheme
+                        if lb_type == 'classic':
+                            # Classic ELB goes at VPC level
+                            vpc_node["children"].append(lb_node)
+                            logger.info(f"Added Classic ELB {resource.name} to VPC {vpc.name}")
+                        else:
+                            # ALB/NLB placement based on scheme
+                            if lb_details.get('scheme') == 'internet-facing':
+                                # Internet-facing ALB/NLB goes at VPC level
+                                vpc_node["children"].append(lb_node)
+                                logger.info(f"Added internet-facing {lb_type} {resource.name} to VPC {vpc.name}")
+                            else:
+                                # Internal ALB/NLB goes in subnet
+                                placed = False
+                                for az in lb_details.get('availability_zones', []):
+                                    subnet_id = az.get('SubnetId')  
+                                    if subnet_id:
+                                        subnet_node = next((s for s in vpc_node["children"] 
+                                                          if s["type"] == "subnet" and 
+                                                          s["details"].get("id") == subnet_id), None)
+                                        if subnet_node:
+                                            subnet_node["children"].append(lb_node)
+                                            logger.info(f"Added internal {lb_type} {resource.name} to subnet {subnet_id}")
+                                            placed = True
+                                            break  # Only add to first subnet to avoid duplication
+                                if not placed:
+                                    logger.warning(f"Could not place internal {lb_type} {resource.name} in any subnet, adding to VPC level")
+                                    vpc_node["children"].append(lb_node)
 
                 root["children"].append(vpc_node)
                 logger.debug(f"Added VPC {vpc.name} with {len(vpc_node['children'])} children to root")
